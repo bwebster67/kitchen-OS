@@ -13,7 +13,7 @@ Kitchen OS is a mobile-first pantry, recipe, and shopping app for one household.
    npx supabase db push
    ```
 
-   If you prefer the SQL Editor, run the three migration files in `supabase/migrations` in filename order in a fresh project. Use either the SQL Editor or CLI migrations to initialize a project. The CLI maintains migration history for subsequent updates.
+   If you prefer the SQL Editor, run the migration files in `supabase/migrations` in filename order in a fresh project. Use either the SQL Editor or CLI migrations to initialize a project. The CLI maintains migration history for subsequent updates.
 
 3. In **Authentication → Users**, choose **Add user → Create new user**. Enter the email and password you want to use, and select the option to confirm the email automatically. In **Authentication → Sign In / Providers**, leave Email enabled and turn off new user signups for personal use. The first successful sign-in creates your kitchen, the five built-in locations, and a Groceries list.
 4. For external barcode lookup, complete the [Open Food Facts API usage form linked in its API guide](https://openfoodfacts.github.io/documentation/docs/Product-Opener/api/) and use an email that can receive messages about your integration. In **Edge Functions → Secrets**, create `OFF_CONTACT_EMAIL` with that email address. Deploy the proxy from the project directory.
