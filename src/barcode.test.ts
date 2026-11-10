@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { lookupProduct, normalizeBarcode, parsePackage } from './barcode'
+import { barcodeDefaults, lookupProduct, normalizeBarcode, parsePackage } from './barcode'
 import type { Product } from './model'
 
 describe('barcode lookup', () => {
@@ -30,5 +30,38 @@ describe('barcode lookup', () => {
   it('extracts only unambiguous package measures', () => {
     expect(parsePackage('12 fl oz')).toEqual({ net_quantity: 12, net_unit: 'fl oz' })
     expect(parsePackage('2 × 400 g')).toBeNull()
+  })
+
+  it('keeps a bottle count and uses the label unit for its contents', () => {
+    expect(barcodeDefaults({
+      name: 'Milk', source: 'open_food_facts', package_label: '52 fl oz',
+      product_quantity: '1538', product_quantity_unit: 'ml', category_tags: ['en:dairies', 'en:milks'],
+      package_shapes: ['en:bottle'],
+    })).toEqual({ mode: 'count', quantity: 1, unit: 'bottle', net_quantity: 52, net_unit: 'fl oz', category: 'Dairy & eggs' })
+  })
+
+  it('uses normalized weight when there is no packaging or usable printed measure', () => {
+    expect(barcodeDefaults({
+      name: 'Ground beef', source: 'open_food_facts', package_label: 'Family size',
+      product_quantity: '450', product_quantity_unit: 'g', category_tags: ['en:meats'],
+    })).toMatchObject({ mode: 'exact', quantity: 450, unit: 'g', category: 'Meat & seafood' })
+  })
+
+  it('uses individual quantities for an explicit multipack or item count', () => {
+    expect(barcodeDefaults({
+      name: 'Soda', source: 'open_food_facts', package_label: '6 × 25 cl', package_shapes: ['en:can'],
+      product_quantity: 1500, product_quantity_unit: 'ml', category_tags: ['en:beverages'],
+    })).toMatchObject({ mode: 'count', quantity: 6, unit: 'can', net_quantity: 250, net_unit: 'ml', category: 'Drinks' })
+    expect(barcodeDefaults({
+      name: 'Eggs', source: 'open_food_facts', package_label: '6 eggs', package_shapes: ['en:carton'],
+      category_tags: ['en:eggs'],
+    })).toEqual({ mode: 'count', quantity: 6, unit: 'count', category: 'Dairy & eggs' })
+  })
+
+  it('keeps known catalog settings and falls back when the lookup has no usable metadata', () => {
+    expect(barcodeDefaults({ name: 'Water', source: 'catalog', net_quantity: 20, net_unit: 'fl oz' }, 'Drinks', 'bottle'))
+      .toMatchObject({ mode: 'count', quantity: 1, unit: 'bottle', category: 'Drinks' })
+    expect(barcodeDefaults({ name: 'Unknown', source: 'open_food_facts', product_quantity: 42, category_tags: ['en:foods'] }))
+      .toEqual({ mode: 'count', quantity: 1, unit: 'package', category: undefined })
   })
 })

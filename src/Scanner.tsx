@@ -149,7 +149,7 @@ export function Scanner() {
 
   return <>
     <PageTitle label="Grocery intake" title={scan ? 'Review grocery' : 'Scan a barcode'} action={<Link className="button secondary" to="/kitchen/add">Manual grocery entry</Link>}>
-      {scan ? 'Confirm the package count, storage location and any dates on the label.' : 'Point your camera at a grocery barcode or type the digits below.'}
+      {scan ? 'Confirm the suggested quantity, unit, and category before saving.' : 'Point your camera at a grocery barcode or type the digits below.'}
     </PageTitle>
     {error && <Alert>{error}</Alert>}
     {pending ? <section className="card" role="status">Looking up the product…</section> : scan ? <>

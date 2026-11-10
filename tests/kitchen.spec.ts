@@ -49,8 +49,14 @@ async function setup(page: Page) {
         lookups += 1
         const { barcode } = request.postDataJSON()
         if (barcode === '99999999') return respond({ error: 'Unavailable' }, 503)
+        if (barcode === '4006381333931') return respond({ product: {
+          name: 'Ground beef', source: 'open_food_facts', product_quantity: 450, product_quantity_unit: 'g',
+          category_tags: ['en:meats'],
+        } })
         return respond({ product: barcode === '0036000291452' ? {
-          name: 'Canned tomatoes', brand: 'Test Pantry', package_label: '400 g', source: 'open_food_facts',
+          name: 'Canned tomatoes', brand: 'Test Pantry', source: 'open_food_facts',
+          product_quantity: '400', product_quantity_unit: 'g', category_tags: ['en:canned-vegetables'],
+          package_shapes: ['en:can'],
         } : null })
       }
       if (path === '/rest/v1/rpc/initialize_kitchen') {
@@ -279,7 +285,12 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await expect(page.getByRole('heading', { name: 'Review grocery' })).toBeVisible({ timeout: 12_000 })
     await expect(page.getByLabel('Item name')).toHaveValue('Canned tomatoes')
     await expect(page.getByLabel('Brand')).toHaveValue('Test Pantry')
+    await expect(page.getByLabel('Tracking mode')).toHaveValue('count')
+    await expect(page.getByLabel('Quantity', { exact: true })).toHaveValue('1')
+    await expect(page.getByLabel('Unit', { exact: true })).toHaveValue('can')
+    await expect(page.getByLabel('Category')).toHaveValue('Canned goods')
     await expect(page.getByLabel('Net amount per package')).toHaveValue('400')
+    await expect(page.getByLabel('Net amount unit')).toHaveValue('g')
     const viewport = page.viewportSize()
     if (viewport && viewport.width <= 480) await page.setViewportSize({ ...viewport, width: 430 })
     await expectDateInputsToFit(page)
@@ -300,6 +311,8 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await page.getByLabel('Barcode', { exact: true }).fill('036000291452')
     await page.getByRole('button', { name: 'Look up barcode' }).click()
     await expect(page.getByText('Found in your kitchen catalog.')).toBeVisible()
+    await expect(page.getByLabel('Unit', { exact: true })).toHaveValue('can')
+    await expect(page.getByLabel('Category')).toHaveValue('Canned goods')
     expect(app.lookups()).toBe(1)
     await page.getByRole('button', { name: 'Cancel review' }).click()
     if (canSimulate) {
@@ -328,6 +341,15 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await page.getByRole('button', { name: 'Look up barcode' }).click()
     await expect(page.getByText('Product lookup is unavailable.', { exact: false })).toBeVisible()
     await page.getByRole('button', { name: 'Cancel review' }).click()
+    await page.getByLabel('Barcode', { exact: true }).fill('4006381333931')
+    await page.getByRole('button', { name: 'Look up barcode' }).click()
+    await expect(page.getByLabel('Tracking mode')).toHaveValue('exact')
+    await expect(page.getByLabel('Quantity', { exact: true })).toHaveValue('450')
+    await expect(page.getByLabel('Unit', { exact: true })).toHaveValue('g')
+    await expect(page.getByLabel('Category')).toHaveValue('Meat & seafood')
+    await page.getByLabel('Quantity', { exact: true }).fill('500')
+    await expect(page.getByLabel('Quantity', { exact: true })).toHaveValue('500')
+    await page.getByRole('button', { name: 'Cancel review' }).click()
     await page.evaluate(() => { Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined }) })
     await page.getByRole('button', { name: 'Open camera' }).click()
     await expect(page.getByText('Camera scanning requires a supported browser', { exact: false })).toBeVisible()
@@ -339,7 +361,7 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await page.getByLabel('Amount to consume').fill('100')
     await page.getByRole('button', { name: 'Confirm', exact: true }).click()
     await expect(page.getByText('300 g remaining')).toBeVisible()
-    await expect(page.getByRole('heading', { name: 'Pantry · 1 package' })).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Pantry · 1 can' })).toBeVisible()
   } finally { await app.db.close() }
 })
 

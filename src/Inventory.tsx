@@ -4,7 +4,7 @@ import { ArrowLeft, Barcode, CalendarClock, PackagePlus, Search } from 'lucide-r
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { useKitchen } from './context'
 import { activeBatches, categories, combinedQuantities, convert, displayDate, formatQuantity, freshness, freshnessDate, levels, localDate, measureUnits, modeUnits, nameKey, packageContents, roundQuantity, sortBatches, unitLabels } from './domain'
-import { normalizeBarcode } from './barcode'
+import { barcodeDefaults, normalizeBarcode } from './barcode'
 import type { ProductMatch } from './barcode'
 import type { Batch, DateType, Mode, ShoppingItem, Unit } from './model'
 import { Alert, Button, Empty, Field, PageTitle, Section, errorMessage } from './ui'
@@ -17,18 +17,19 @@ export function UnitOptions({ options }: { options: Unit[] }) {
   return <>{options.map((unit) => <option value={unit} key={unit}>{unitLabels[unit] ?? unit}</option>)}</>
 }
 
-function newValues(location: string, barcode?: string, product?: ProductMatch | null, item?: ShoppingItem) {
-  const quantity = item ? String(item.quantity) : '1'
-  const unit: Unit = item?.unit ?? (barcode ? 'package' : 'count')
-  const mode: Mode = measureUnits.includes(unit) || (unit === 'count' && !Number.isInteger(Number(quantity))) ? 'exact' : 'count'
+function newValues(location: string, barcode?: string, product?: ProductMatch | null, item?: ShoppingItem, catalogCategory?: string, savedUnit?: Unit) {
+  const defaults = product ? barcodeDefaults(product, catalogCategory, savedUnit) : null
+  const quantity = String(item?.quantity ?? defaults?.quantity ?? 1)
+  const unit: Unit = item?.unit ?? defaults?.unit ?? (barcode ? 'package' : 'count')
+  const mode: Mode = defaults?.mode ?? (measureUnits.includes(unit) || (unit === 'count' && !Number.isInteger(Number(quantity))) ? 'exact' : 'count')
   return {
-    name: item?.name ?? product?.name ?? '', category: item?.category ?? 'Other', location_id: location,
+    name: item?.name ?? product?.name ?? '', category: item?.category ?? defaults?.category ?? 'Other', location_id: location,
     quantity, unit, mode: mode as Mode,
     purchased_on: localDate(), printed_on: '', printed_type: 'best_before' as DateType, estimated_on: '',
     opened_on: '', frozen_on: '', thawed_on: '', price: '', notes: '', barcode: barcode ?? '',
     brand: product?.brand ?? '', package_label: product?.package_label ?? '',
-    net_quantity: product?.net_quantity ? String(product.net_quantity) : '',
-    net_unit: product?.net_unit ?? 'g' as Unit,
+    net_quantity: defaults?.net_quantity ? String(defaults.net_quantity) : '',
+    net_unit: defaults?.net_unit ?? 'g' as Unit,
   }
 }
 
@@ -48,7 +49,14 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
   const { kitchen, inventory, busy } = useKitchen()
   const ingredient = kitchen.ingredients.find((row) => row.id === batch?.ingredient_id)
   const fallback = kitchen.locations.find((row) => row.name === 'Pantry')?.id ?? kitchen.locations[0]?.id ?? ''
-  const [values, setValues] = useState(() => batch && ingredient ? fromBatch(batch, ingredient.name, ingredient.category) : newValues(fallback, barcode, product, item))
+  const [values, setValues] = useState(() => {
+    if (batch && ingredient) return fromBatch(batch, ingredient.name, ingredient.category)
+    const catalogProduct = product?.source === 'catalog' ? kitchen.products.find((row) => row.barcode === barcode) : undefined
+    const catalogCategory = kitchen.ingredients.find((row) => row.id === catalogProduct?.ingredient_id)?.category
+    const latestBatch = catalogProduct && kitchen.inventory_batches.filter((row) => row.product_id === catalogProduct.id)
+      .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
+    return newValues(fallback, barcode, product, item, catalogCategory, latestBatch?.unit)
+  })
   const [error, setError] = useState('')
   const [added, setAdded] = useState(0)
   const [barcodeFormat, setBarcodeFormat] = useState<'GTIN' | 'UPC_E'>('GTIN')

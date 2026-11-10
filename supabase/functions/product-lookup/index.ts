@@ -42,6 +42,7 @@ Deno.serve(async (request) => {
   if (membershipError) return json({ error: 'Could not check kitchen access.' }, 503)
   if (!memberships.length) return json({ error: 'Initialize your kitchen first.' }, 403)
 
+  let legacyProduct: unknown
   try {
     const body = await request.json()
     const barcode = body?.barcode
@@ -51,18 +52,24 @@ Deno.serve(async (request) => {
     const cached = await client.from('off_product_cache').select('product').eq('barcode', barcode)
       .gt('expires_at', new Date().toISOString()).maybeSingle()
     if (cached.error) return json({ error: 'The product cache is unavailable.' }, 503)
-    if (cached.data) return json({ product: cached.data.product })
+    if (cached.data) {
+      const product = cached.data.product
+      if (!product || Array.isArray(product.category_tags)) return json({ product })
+      legacyProduct = product
+    }
     const budget = await client.rpc('reserve_off_lookup')
-    if (budget.error || !budget.data) return json({ error: 'Lookup is busy. Enter details manually or try again shortly.' }, 429)
+    if (budget.error || !budget.data) return legacyProduct ? json({ product: legacyProduct })
+      : json({ error: 'Lookup is busy. Enter details manually or try again shortly.' }, 429)
 
     const staging = Deno.env.get('OFF_USE_STAGING') === 'true'
     const host = staging ? 'https://world.openfoodfacts.net' : 'https://world.openfoodfacts.org'
     const lookup = new URL(`/api/v3.6/product/${barcode}.json`, host)
-    lookup.searchParams.set('fields', 'product_name,product_name_en,brands,quantity')
+    lookup.searchParams.set('fields', 'product_name,product_name_en,brands,quantity,product_quantity,product_quantity_unit,categories_tags,packagings')
     const headers = new Headers({ 'User-Agent': `KitchenOS/1.0 (${contact})`, Accept: 'application/json' })
     if (staging) headers.set('Authorization', 'Basic ' + btoa('off:off'))
     const response = await fetch(lookup, { headers, signal: AbortSignal.timeout(6000) })
-    if (!response.ok && response.status !== 404) return json({ error: 'Open Food Facts is unavailable.' }, 503)
+    if (!response.ok && response.status !== 404) return legacyProduct ? json({ product: legacyProduct })
+      : json({ error: 'Open Food Facts is unavailable.' }, 503)
     let product = null
     if (response.ok) {
       const result = await response.json()
@@ -71,6 +78,15 @@ Deno.serve(async (request) => {
       const name = text(food?.product_name_en, 120) || text(food?.product_name, 120)
       if (name) product = {
         name, brand: text(food.brands, 120), package_label: text(food.quantity, 120), source: 'open_food_facts',
+        product_quantity: typeof food.product_quantity === 'number' ? food.product_quantity : text(food.product_quantity, 32),
+        product_quantity_unit: text(food.product_quantity_unit, 16),
+        category_tags: Array.isArray(food.categories_tags)
+          ? food.categories_tags.filter((tag: unknown): tag is string => typeof tag === 'string' && tag.length <= 120)
+          : [],
+        package_shapes: Array.isArray(food.packagings)
+          ? food.packagings.map((entry: { shape?: { id?: unknown } | string } | null) =>
+            text(typeof entry?.shape === 'string' ? entry.shape : entry?.shape?.id, 80)).filter(Boolean)
+          : [],
       }
     }
     await client.from('off_product_cache').upsert({
@@ -78,6 +94,6 @@ Deno.serve(async (request) => {
     })
     return json({ product })
   } catch {
-    return json({ error: 'Product lookup is temporarily unavailable.' }, 503)
+    return legacyProduct ? json({ product: legacyProduct }) : json({ error: 'Product lookup is temporarily unavailable.' }, 503)
   }
 })
