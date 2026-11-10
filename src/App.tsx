@@ -14,11 +14,11 @@ import { Shopping } from './Shopping'
 import { Settings as Profile } from './Settings'
 
 const nav = [
-  { to: '/', label: 'Home', icon: House },
-  { to: '/kitchen', label: 'Kitchen', icon: Basket },
-  { to: '/meals', label: 'Meals', icon: ChefHat },
-  { to: '/shopping', label: 'Shopping', icon: ShoppingCart },
-  { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/', label: 'Home', icon: House, tone: 'lime' },
+  { to: '/kitchen', label: 'Kitchen', icon: Basket, tone: 'peach' },
+  { to: '/meals', label: 'Meals', icon: ChefHat, tone: 'lilac' },
+  { to: '/shopping', label: 'Shopping', icon: ShoppingCart, tone: 'mint' },
+  { to: '/settings', label: 'Settings', icon: Settings, tone: 'blue' },
 ]
 const shortcuts = [
   { to: '/kitchen/add', label: 'Add grocery', icon: Basket },
@@ -93,6 +93,7 @@ function Shell() {
   const { busy, feedback, dismiss, inventory, kitchen } = useKitchen()
   const [menu, setMenu] = useState(false)
   const location = useLocation()
+  const section = nav.find(({ to }) => to === `/${location.pathname.split('/')[1]}`)
   useEffect(() => {
     setMenu(false)
     window.scrollTo(0, 0)
@@ -102,10 +103,10 @@ function Shell() {
     <a className="skip" href="#main">Skip to content</a>
     <aside className="rail"><Link to="/" aria-label="Kitchen OS home"><Brand /></Link>
       <p className="rail-label">Workspace</p>
-      <nav aria-label="Main navigation">{nav.map(({ to, label, icon: Icon }) => <NavLink key={to} to={to} end={to === '/'}><Icon size={20} aria-hidden="true" /><span>{label}</span></NavLink>)}</nav>
+      <nav aria-label="Main navigation">{nav.map(({ to, label, icon: Icon, tone }) => <NavLink key={to} to={to} end={to === '/'} data-tone={tone}><Icon size={20} aria-hidden="true" /><span>{label}</span></NavLink>)}</nav>
       <div className="rail-foot"><span className="status-dot" />{kitchen.name}</div>
     </aside>
-    <div className="workspace">
+    <div className="workspace" data-tone={section?.tone}>
       <div className="toolbar"><Link className="mobile-brand" to="/" aria-label="Kitchen OS home"><Brand /></Link><span className="desktop-label">PERSONAL WORKSPACE</span>
         <div className="add-wrap" onKeyDown={(event) => { if (event.key === 'Escape') setMenu(false) }}>
           <Button aria-expanded={menu} aria-controls="add-menu" onClick={() => setMenu(!menu)}><Plus size={19} aria-hidden="true" /> Add</Button>

@@ -162,9 +162,21 @@ authenticated('signs in, stocks and cooks from inventory, then eats leftovers', 
   try {
     await page.goto('/kitchen')
     await expect(page.getByRole('heading', { name: 'Welcome home.' })).toBeVisible()
+    if (process.env.KITCHEN_TEST_SCREENSHOTS === '1') await page.screenshot({ path: testInfo.outputPath('sign-in.png'), fullPage: true })
     await signIn(page)
     await noHorizontalScroll(page)
     if (process.env.KITCHEN_TEST_SCREENSHOTS === '1') await page.screenshot({ path: testInfo.outputPath('dashboard.png'), fullPage: true })
+    const dashboardViewport = page.viewportSize()
+    if (dashboardViewport && dashboardViewport.width < 480) {
+      await page.setViewportSize({ ...dashboardViewport, width: 320 })
+      const actionsFit = await page.locator('.home-hero').evaluate((hero) => {
+        const artwork = hero.querySelector('.hero-art')!.getBoundingClientRect()
+        return [...hero.querySelectorAll('.hero-copy a')].every((link) => link.getBoundingClientRect().right <= artwork.left)
+      })
+      expect(actionsFit).toBe(true)
+      await noHorizontalScroll(page)
+      await page.setViewportSize(dashboardViewport)
+    }
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Kitchen' }).click()
     await expect(page.getByRole('heading', { name: 'Your shelves are empty' })).toBeVisible()
     await page.getByRole('link', { name: 'Add groceries', exact: true }).first().click()
@@ -182,6 +194,7 @@ authenticated('signs in, stocks and cooks from inventory, then eats leftovers', 
 
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Meals' }).click()
     await page.getByRole('link', { name: 'New recipe' }).click()
+    if (process.env.KITCHEN_TEST_SCREENSHOTS === '1') await page.screenshot({ path: testInfo.outputPath('recipe-editor.png'), fullPage: true })
     await page.getByLabel('Recipe name').fill('Beef tacos')
     await page.getByLabel('Ingredient 1', { exact: true }).fill('Ground beef')
     await page.getByLabel('Amount', { exact: true }).fill('0.25')
@@ -209,6 +222,7 @@ authenticated('signs in, stocks and cooks from inventory, then eats leftovers', 
     await expect(page.getByRole('heading', { name: 'Refrigerator · 1.5 lb' })).toBeVisible()
 
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Shopping' }).click()
+    if (process.env.KITCHEN_TEST_SCREENSHOTS === '1') await page.screenshot({ path: testInfo.outputPath('shopping.png'), fullPage: true })
     await page.getByRole('button', { name: 'Add item', exact: true }).click()
     await page.getByLabel('Shopping item', { exact: true }).fill('Onions')
     await page.getByLabel('Quantity', { exact: true }).fill('3')
@@ -464,7 +478,12 @@ test('ships a standalone manifest, icons and an offline application shell', asyn
   const manifestResponse = await page.request.get('/manifest.webmanifest')
   expect(manifestResponse.ok()).toBe(true)
   const manifest = await manifestResponse.json()
-  expect(manifest).toMatchObject({ name: 'Kitchen OS', start_url: '/', display: 'standalone' })
+  const launchColor = await page.locator('meta[name="theme-color"]').getAttribute('content')
+  expect(manifest).toMatchObject({
+    name: 'Kitchen OS', start_url: '/', display: 'standalone',
+    theme_color: launchColor, background_color: launchColor,
+  })
+  expect(await page.locator('html').evaluate((root) => getComputedStyle(root).colorScheme)).toBe('dark')
   for (const icon of manifest.icons) expect((await page.request.get(icon.src)).ok()).toBe(true)
   expect((await page.request.get('/apple-touch-icon.png')).ok()).toBe(true)
   await page.evaluate(async () => { await navigator.serviceWorker.ready })

@@ -6,10 +6,10 @@ import { FreshnessBadge } from './Inventory'
 import { Empty, Section } from './ui'
 
 const quickActions = [
-  { to: '/kitchen/add', label: 'Add groceries', detail: 'Log what you brought home', icon: PackagePlus },
-  { to: '/kitchen/scan', label: 'Scan barcode', detail: 'Look up a packaged item', icon: Barcode },
-  { to: '/meals/cook', label: 'Create a meal', detail: 'Cook with what you have', icon: ChefHat },
-  { to: '/shopping', label: 'Shopping lists', detail: 'Plan the next grocery run', icon: ShoppingCart },
+  { to: '/kitchen/add', label: 'Add groceries', detail: 'Log what you brought home', icon: PackagePlus, tone: 'peach' },
+  { to: '/kitchen/scan', label: 'Scan barcode', detail: 'Look up a packaged item', icon: Barcode, tone: 'blue' },
+  { to: '/meals/cook', label: 'Create a meal', detail: 'Cook with what you have', icon: ChefHat, tone: 'lilac' },
+  { to: '/shopping', label: 'Shopping lists', detail: 'Plan the next grocery run', icon: ShoppingCart, tone: 'mint' },
 ]
 
 export function Home() {
@@ -31,22 +31,27 @@ export function Home() {
         <p>See what you have, use what’s due soon, and make a plan for dinner.</p>
         <div className="row"><Link className="button hero-button" to="/kitchen/add"><PackagePlus size={18} /> Add groceries</Link><Link className="button hero-link" to="/kitchen">Open kitchen <ArrowRight size={17} /></Link></div>
       </div>
-      <div className="hero-art" aria-hidden="true"><svg viewBox="0 0 310 260" fill="none">
-        <circle cx="180" cy="125" r="109" fill="#48634a" /><circle cx="180" cy="125" r="83" stroke="#83947a" strokeDasharray="2 7" />
-        <path d="M68 141h224c-11 50-54 84-112 84s-101-34-112-84Z" fill="#a7b892" stroke="#dce8cb" strokeWidth="2"/>
-        <path d="M84 155h192M151 225h58" stroke="#2c5038" strokeWidth="2" strokeLinecap="round"/>
-        <path d="M179 140c-4-53 16-84 58-106-2 46-21 75-58 92M179 137c-23-31-44-43-80-42 12 31 38 45 80 42Z" fill="#d9e5c6" stroke="#d9e5c6" strokeWidth="2" strokeLinejoin="round"/>
-        <path d="M178 140c15-43 29-59 49-88M174 136c-19-15-42-29-62-32" stroke="#73916a" strokeWidth="2" strokeLinecap="round"/>
-        <path d="M66 83v18m-9-9h18m189-33v24m-12-12h24m13 42v12m-6-6h12" stroke="#dbe6c9" strokeWidth="1.5" strokeLinecap="round"/>
-        <circle cx="60" cy="128" r="3" fill="#dbe6c9"/><circle cx="246" cy="104" r="4" fill="#dbe6c9"/>
+      <div className="hero-art" aria-hidden="true"><svg viewBox="0 0 316 254" fill="none" stroke="var(--dark-ink)" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="169" cy="134" r="106" fill="var(--dark-ink)" />
+        <circle cx="160" cy="126" r="106" fill="#f8eedb" />
+        <circle cx="160" cy="126" r="87" stroke="#8b759a" strokeDasharray="3 8" />
+        <path d="M85 130c0-23 14-39 34-39 12 0 15 5 25 3 17-4 32 11 32 32 0 26-18 47-45 47-26 0-46-16-46-43Z" fill="var(--peach)" />
+        <path d="M130 100c-4-13-15-18-25-17 3 9 10 15 24 17-13 2-16 8-19 15 12 0 18-5 22-12 6 6 13 8 20 7-3-8-7-12-15-13 8-5 10-10 11-17-9 2-15 7-18 20Z" fill="var(--lime)" />
+        <path d="M99 133c1 11 8 19 17 22" />
+        <path d="M191 116c-22 4-37-14-33-31 15-1 30 4 36 19-4-22 6-39 25-46 10 17 6 38-10 55Z" fill="var(--mint)" />
+        <path d="M200 109l13-35m-19 35-23-17" />
+        <path d="M193 108c15-9 31 4 25 21-7 20-34 52-52 66-7 5-11 2-9-5 5-26 18-69 36-82Z" fill="var(--amber)" />
+        <path d="m182 124 12 6m-23 14 11 6m-17 14 7 4" />
+        <path d="M41 51v28M27 65h28m225 99v25m-12-12h25" />
+        <circle cx="279" cy="77" r="6" fill="var(--lime)" /><circle cx="43" cy="190" r="5" fill="var(--peach)" />
       </svg></div>
     </header>
     <div className="stats">
-      <Stat to="/kitchen" icon={<ShoppingBag size={21} />} number={total} label="Inventory items" detail={`${batches.length} active batches`} />
-      <Stat to="/kitchen?fresh=soon" icon={<CalendarClock size={21} />} number={due.length} label="Due soon" detail={`Within ${window} days`} />
-      <Stat to="/shopping" icon={<TriangleAlert size={21} />} number={low.length} label="Low stock" detail="Ingredients to replenish" />
+      <Stat to="/kitchen" tone="peach" icon={<ShoppingBag size={21} />} number={total} label="Inventory items" detail={`${batches.length} active batches`} />
+      <Stat to="/kitchen?fresh=soon" tone="amber" icon={<CalendarClock size={21} />} number={due.length} label="Due soon" detail={`Within ${window} days`} />
+      <Stat to="/shopping" tone="mint" icon={<TriangleAlert size={21} />} number={low.length} label="Low stock" detail="Ingredients to replenish" />
     </div>
-    <Section title="Quick actions"><div className="quick-grid">{quickActions.map(({ to, label, detail, icon: Icon }) => <Link className="card quick-action" to={to} key={to}>
+    <Section title="Quick actions"><div className="quick-grid">{quickActions.map(({ to, label, detail, icon: Icon, tone }) => <Link className="card quick-action" to={to} data-tone={tone} key={to}>
       <span className="quick-icon"><Icon size={21} /></span><div><strong>{label}</strong><small>{detail}</small></div><ArrowRight className="quick-arrow" size={17} />
     </Link>)}</div></Section>
     <div className="dashboard-grid">
@@ -62,7 +67,7 @@ export function Home() {
     </div>
     <Section title="Meal ideas" action={<Link className="text-link" to="/meals">Recipe book <ArrowRight size={15} /></Link>}>
       {ideas.length ? <div className="tile-grid">{ideas.map(({ recipe, reasons }) => <article className="card stack" key={recipe.id}>
-        <span className="quick-icon"><CookingPot size={21} /></span><h3>{recipe.name}</h3><div className="row">{reasons.map((reason) => <span className="badge" key={reason}>{reason}</span>)}</div>
+        <span className="quick-icon" data-tone="lilac"><CookingPot size={21} /></span><h3>{recipe.name}</h3><div className="row">{reasons.map((reason) => <span className="badge" key={reason}>{reason}</span>)}</div>
         <Link className="text-link" to={`/meals/cook/${recipe.id}`}>Review recipe <ArrowRight size={16} /></Link>
       </article>)}</div> : <Empty title={kitchen.recipes.length ? 'No recipes match your restrictions' : 'Start with a favorite recipe'} to="/meals" action="Open recipe book">
         {kitchen.recipes.length ? 'Review diet and allergen labels on your recipes and ingredients.' : 'Saved recipes turn into suggestions based on your pantry and preferences.'}
@@ -76,6 +81,6 @@ export function Home() {
   </>
 }
 
-function Stat({ to, number, label, detail, icon }: { to: string; number: number; label: string; detail: string; icon: React.ReactNode }) {
-  return <Link className="card stat" to={to}><span className="quick-icon">{icon}</span><strong>{number}</strong><span>{label}</span><small>{detail}</small></Link>
+function Stat({ to, tone, number, label, detail, icon }: { to: string; tone: string; number: number; label: string; detail: string; icon: React.ReactNode }) {
+  return <Link className="card stat" to={to} data-tone={tone}><span className="quick-icon">{icon}</span><strong>{number}</strong><span>{label}</span><small>{detail}</small></Link>
 }

@@ -11,7 +11,7 @@ export default defineConfig({
       manifest: {
         name: 'Kitchen OS', short_name: 'Kitchen OS',
         description: 'Your groceries, meals and shopping in one place.',
-        theme_color: '#f7f6ef', background_color: '#f7f6ef',
+        theme_color: '#15141b', background_color: '#15141b',
         start_url: '/', scope: '/', display: 'standalone',
         icons: [
           { src: '/icon-192.png', sizes: '192x192', type: 'image/png' },
