@@ -22,7 +22,7 @@ Kitchen OS is a mobile-first pantry, recipe, and shopping app for one household.
    npx supabase functions deploy product-lookup
    ```
 
-   The proxy uses Supabase-provided server credentials. For upstream integration testing, set `OFF_USE_STAGING=true` in a separate development project before making test requests. Manual entry and the personal product catalog work even if the external proxy has yet to be configured.
+   The proxy uses Supabase-provided server credentials and checks the caller's access token and kitchen membership. If deploying from the dashboard editor, turn off **Verify JWT with legacy secret** for this function so accounts using current signing keys can reach the handler. For upstream integration testing, set `OFF_USE_STAGING=true` in a separate development project before making test requests. Manual entry and the personal product catalog work even if the external proxy has yet to be configured.
 
 References for [Supabase API keys](https://supabase.com/docs/guides/getting-started/api-keys), [Edge Function deployment](https://supabase.com/docs/guides/functions/deploy), and [Edge Function secrets](https://supabase.com/docs/guides/functions/secrets).
 

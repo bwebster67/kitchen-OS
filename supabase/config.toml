@@ -1,3 +1,4 @@
 project_id = "kitchen-os"
 [functions.product-lookup]
-verify_jwt = true
+# The handler validates the current Supabase access token and kitchen membership.
+verify_jwt = false
