@@ -3,7 +3,7 @@ import type { FormEvent } from 'react'
 import { ArrowLeft, Barcode, CalendarClock, PackagePlus, Search } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { useKitchen } from './context'
-import { activeBatches, categories, combinedQuantities, displayDate, formatQuantity, freshness, freshnessDate, levels, localDate, measureUnits, modeUnits, nameKey, sortBatches, unitLabels } from './domain'
+import { activeBatches, categories, combinedQuantities, convert, displayDate, formatQuantity, freshness, freshnessDate, levels, localDate, measureUnits, modeUnits, nameKey, packageContents, roundQuantity, sortBatches, unitLabels } from './domain'
 import { normalizeBarcode } from './barcode'
 import type { ProductMatch } from './barcode'
 import type { Batch, DateType, Mode, ShoppingItem, Unit } from './model'
@@ -38,6 +38,7 @@ function fromBatch(batch: Batch, name: string, category: string): Values {
     purchased_on: batch.purchased_on, printed_on: batch.printed_on ?? '', printed_type: batch.printed_type ?? 'best_before',
     estimated_on: batch.estimated_on ?? '', opened_on: batch.opened_on ?? '', frozen_on: batch.frozen_on ?? '', thawed_on: batch.thawed_on ?? '',
     price: batch.price === null ? '' : String(batch.price), notes: batch.notes ?? '',
+    net_quantity: batch.net_quantity === null ? '' : String(batch.net_quantity), net_unit: batch.net_unit ?? 'g',
   }
 }
 
@@ -84,7 +85,7 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
         barcode: values.barcode ? normalizeBarcode(values.barcode, barcodeFormat) : null,
       }
       if (!values.name.trim()) throw new Error('Enter an item name.')
-      if (batch) await inventory('edit', { ...payload, id: batch.id, revision: batch.revision })
+      if (batch) await inventory('edit', { ...payload, id: batch.id, revision: batch.revision, set_package_size: batch.mode === 'count' && !batch.contents_used })
       else if (item) await inventory('stock_shopping', { ...payload, shopping_item_id: item.id })
       else await inventory('add', payload)
       if (onSaved) onSaved()
@@ -128,10 +129,10 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
           {values.barcode.length === 8 && !barcode && <Field label="Barcode format"><select value={barcodeFormat} onChange={(event) => setBarcodeFormat(event.target.value as 'GTIN' | 'UPC_E')}><option value="GTIN">EAN-8</option><option value="UPC_E">UPC-E</option></select></Field>}
           <Field label="Brand"><input value={values.brand} maxLength={120} onChange={(event) => update('brand', event.target.value)} /></Field>
           <Field label="Package size on label"><input value={values.package_label} maxLength={120} onChange={(event) => update('package_label', event.target.value)} /></Field>
-          {values.mode === 'count' && <>
-            <Field label="Net amount per package"><input type="number" inputMode="decimal" min=".00000001" max="1000000" step=".00000001" value={values.net_quantity} onChange={(event) => update('net_quantity', event.target.value)} /></Field>
-            {values.net_quantity && <Field label="Net amount unit"><select value={values.net_unit} onChange={(event) => update('net_unit', event.target.value as Unit)}><UnitOptions options={measureUnits} /></select></Field>}
-          </>}
+        </>}
+        {values.mode === 'count' && <>
+          <Field label="Net amount per package"><input type="number" inputMode="decimal" min=".00000001" max="1000000" step=".00000001" value={values.net_quantity} disabled={!!batch?.contents_used} onChange={(event) => update('net_quantity', event.target.value)} /></Field>
+          {values.net_quantity && <Field label="Net amount unit"><select value={values.net_unit} disabled={!!batch?.contents_used} onChange={(event) => update('net_unit', event.target.value as Unit)}><UnitOptions options={measureUnits} /></select></Field>}
         </>}
         <Field label="Estimated freshness date" hint="A reminder you enter yourself."><input type="date" value={values.estimated_on} onChange={(event) => update('estimated_on', event.target.value)} /></Field>
         <Field label="Price"><input type="number" min="0" max="9999999999.99" step=".01" value={values.price} onChange={(event) => update('price', event.target.value)} /></Field>
@@ -232,9 +233,13 @@ function BatchCard({ batch, name, location, window }: { batch: Batch; name: stri
   const { inventory, kitchen, busy } = useKitchen()
   const [panel, setPanel] = useState<'' | 'adjust' | 'edit' | 'consume' | 'move' | 'thaw'>('')
   const [amount, setAmount] = useState('')
+  const [consumeUnit, setConsumeUnit] = useState<Unit>(batch.unit)
   const [destination, setDestination] = useState('')
   const product = kitchen.products.find((row) => row.id === batch.product_id)
   const leftover = kitchen.prepared_leftovers.find((row) => row.batch_id === batch.id)
+  const contents = packageContents(batch)
+  const measured = panel === 'consume' && consumeUnit !== batch.unit ? contents : null
+  const deduction = measured && amount ? convert(amount, consumeUnit, measured.unit)?.toDecimalPlaces(8) : null
   async function change(action: 'adjust' | 'consume' | 'move' | 'open' | 'freeze' | 'thaw' | 'discard', data: Record<string, unknown> = {}) {
     try {
       await inventory(action, { id: batch.id, revision: batch.revision, ...data })
@@ -244,10 +249,12 @@ function BatchCard({ batch, name, location, window }: { batch: Batch; name: stri
   function show(next: typeof panel) {
     setPanel(panel === next ? '' : next)
     setAmount(next === 'adjust' ? String(batch.quantity) : batch.mode === 'approximate' ? '0' : '1')
+    setConsumeUnit(contents?.unit ?? batch.unit)
     setDestination(next === 'thaw' ? kitchen.locations.find((row) => row.name === 'Refrigerator')?.id ?? batch.location_id : batch.location_id)
   }
   return <article className="batch">
     <div className="row between"><h3>{location} · {formatQuantity(batch.quantity, batch.unit)}</h3><FreshnessBadge batch={batch} window={window} /></div>
+    {contents && <p className="muted">{formatQuantity(roundQuantity(contents.remaining, 3), contents.unit)} remaining</p>}
     <p className="muted">Purchased {displayDate(batch.purchased_on)}{batch.printed_on && batch.printed_type ? ` · ${dateNames[batch.printed_type]} ${displayDate(batch.printed_on)}` : ''}{batch.estimated_on ? ` · Estimated ${displayDate(batch.estimated_on)}` : ''}</p>
     {(batch.opened_on || batch.frozen_on || batch.thawed_on) && <p className="muted">{[
       batch.opened_on && `Opened ${displayDate(batch.opened_on)}`, batch.frozen_on && `Frozen ${displayDate(batch.frozen_on)}`, batch.thawed_on && `Thawed ${displayDate(batch.thawed_on)}`,
@@ -274,14 +281,20 @@ function BatchCard({ batch, name, location, window }: { batch: Batch; name: stri
       event.preventDefault()
       if (panel === 'consume') {
         if (batch.mode === 'approximate') void change('adjust', { quantity: Number(amount) })
+        else if (measured && deduction?.gt(0) && deduction.lte(measured.remaining)) void change('consume', { amount: deduction.toNumber(), content_unit: measured.unit })
+        else if (measured) return
         else void change('consume', { amount: Number(amount) })
       } else void change('adjust', { quantity: Number(amount) })
     }}>
       <div className="grow">
         {batch.mode === 'approximate' ? <Field label="New level"><select value={amount} onChange={(event) => setAmount(event.target.value)}>{levels.filter(([value]) => panel === 'adjust' || value <= batch.quantity).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></Field>
-          : <Field label={panel === 'adjust' ? 'New quantity' : 'Amount to consume'}><input type="number" inputMode="decimal" min={panel === 'adjust' ? 0 : batch.mode === 'count' ? 1 : .00000001} max={panel === 'adjust' ? 1000000 : batch.quantity} step={batch.mode === 'count' ? 1 : .00000001} value={amount} onChange={(event) => setAmount(event.target.value)} required /></Field>}
+          : <Field label={panel === 'adjust' ? 'New quantity' : 'Amount to consume'}><input type="number" inputMode="decimal" min={panel === 'adjust' ? 0 : batch.mode === 'count' && !measured ? 1 : .00000001} max={panel === 'adjust' ? 1000000 : measured ? undefined : batch.quantity} step={batch.mode === 'count' && !measured ? 1 : .00000001} value={amount} onChange={(event) => setAmount(event.target.value)} required /></Field>}
       </div>
-      <Button type="submit" disabled={busy}>Confirm</Button>
+      {panel === 'consume' && contents && <div className="grow"><Field label="Consumption unit"><select value={consumeUnit} onChange={(event) => setConsumeUnit(event.target.value as Unit)}>
+        <UnitOptions options={[...measureUnits.filter((unit) => convert(1, unit, contents.unit) !== null), batch.unit]} />
+      </select></Field></div>}
+      {measured && deduction?.gt(measured.remaining) && <p className="muted" role="status">That exceeds the amount remaining.</p>}
+      <Button type="submit" disabled={busy || Boolean(measured && (!deduction?.gt(0) || deduction.gt(measured.remaining)))}>Confirm</Button>
     </form>}
   </article>
 }

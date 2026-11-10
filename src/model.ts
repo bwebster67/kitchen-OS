@@ -11,6 +11,7 @@ export interface Product {
 export interface Batch {
   id: string; ingredient_id: string; location_id: string; product_id: string | null
   mode: Mode; quantity: number; unit: Unit; net_quantity: number | null; net_unit: Unit | null
+  contents_used?: number
   purchased_on: string; printed_on: string | null; printed_type: DateType | null; estimated_on: string | null
   opened_on: string | null; frozen_on: string | null; thawed_on: string | null
   is_frozen: boolean

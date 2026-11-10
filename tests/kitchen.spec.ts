@@ -22,7 +22,7 @@ async function setup(page: Page) {
     grant usage on schema auth to authenticated;
     insert into auth.users values ('${user.id}');
   `)
-  for (const file of ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql']) {
+  for (const file of ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql', '20261109000400_package_contents.sql']) {
     await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), 'utf8'))
   }
   await db.exec('set role authenticated')
@@ -84,7 +84,7 @@ async function setup(page: Page) {
         const column = url.searchParams.get('order')?.split('.')[0] ?? ''
         const order = orderColumns.has(column) ? ` order by ${column}` : ''
         const result = await db.query(`select * from public.${table} where ${filter}=$1::uuid${order}`, [id])
-        const numeric = ['quantity', 'price', 'net_quantity', 'low_quantity', 'approximate_before', 'approximate_after']
+        const numeric = ['quantity', 'price', 'net_quantity', 'contents_used', 'low_quantity', 'approximate_before', 'approximate_after']
         const data = result.rows.map((raw) => {
           const row = { ...raw } as Record<string, unknown>
           for (const key of numeric) if (typeof row[key] === 'string') row[key] = Number(row[key])
@@ -115,6 +115,30 @@ async function noHorizontalScroll(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(await page.evaluate(() => window.innerWidth))
 }
 
+async function expectDateInputsToFit(page: Page) {
+  const dateFields = await page.locator('form .form-grid > .field > input[type=date]:visible').evaluateAll((inputs) =>
+    inputs.map((input) => {
+      const control = input.getBoundingClientRect()
+      const field = input.parentElement!.getBoundingClientRect()
+      const grid = input.parentElement!.parentElement!.getBoundingClientRect()
+      return {
+        label: (input as HTMLInputElement).labels?.[0]?.textContent,
+        contained: control.left >= field.left && control.right <= field.right + 1,
+        spansGrid: field.width >= grid.width - 1,
+        horizontalPadding: getComputedStyle(input).paddingInline,
+      }
+    }),
+  )
+  expect(dateFields.length).toBeGreaterThanOrEqual(6)
+  const phone = (page.viewportSize()?.width ?? 0) <= 480
+  for (const { label, contained, spansGrid, horizontalPadding } of dateFields) {
+    expect(contained, `${label} fits its field`).toBe(true)
+    expect(horizontalPadding, `${label} has no outer horizontal padding`).toBe('0px')
+    if (phone) expect(spansGrid, `${label} has its own row on phones`).toBe(true)
+  }
+  await noHorizontalScroll(page)
+}
+
 const authenticated = test.extend({ serviceWorkers: 'block' })
 
 authenticated('signs in, stocks and cooks from inventory, then eats leftovers', async ({ page }, testInfo) => {
@@ -130,6 +154,8 @@ authenticated('signs in, stocks and cooks from inventory, then eats leftovers', 
     await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Kitchen' }).click()
     await expect(page.getByRole('heading', { name: 'Your shelves are empty' })).toBeVisible()
     await page.getByRole('link', { name: 'Add groceries', exact: true }).first().click()
+    await page.getByText('Package, freshness and notes', { exact: true }).click()
+    await expectDateInputsToFit(page)
     await page.getByLabel('Item name').fill('Ground beef')
     await page.getByLabel('Tracking mode').selectOption('exact')
     await page.getByLabel('Quantity', { exact: true }).fill('2')
@@ -254,6 +280,10 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await expect(page.getByLabel('Item name')).toHaveValue('Canned tomatoes')
     await expect(page.getByLabel('Brand')).toHaveValue('Test Pantry')
     await expect(page.getByLabel('Net amount per package')).toHaveValue('400')
+    const viewport = page.viewportSize()
+    if (viewport && viewport.width <= 480) await page.setViewportSize({ ...viewport, width: 430 })
+    await expectDateInputsToFit(page)
+    if (viewport && viewport.width <= 480) await page.setViewportSize(viewport)
     expect(app.lookups()).toBe(1)
     expect(app.adds()).toBe(0)
     await page.getByRole('button', { name: 'Add and scan another' }).click()
@@ -303,6 +333,13 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await expect(page.getByText('Camera scanning requires a supported browser', { exact: false })).toBeVisible()
     await noHorizontalScroll(page)
     expect(app.adds()).toBe(1)
+    await page.getByRole('navigation', { name: 'Main navigation' }).getByRole('link', { name: 'Kitchen' }).click()
+    await page.getByRole('button', { name: 'Consume', exact: true }).click()
+    await page.getByLabel('Consumption unit').selectOption('g')
+    await page.getByLabel('Amount to consume').fill('100')
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click()
+    await expect(page.getByText('300 g remaining')).toBeVisible()
+    await expect(page.getByRole('heading', { name: 'Pantry · 1 package' })).toBeVisible()
   } finally { await app.db.close() }
 })
 

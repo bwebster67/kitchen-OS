@@ -36,6 +36,9 @@ input:not([type=checkbox], [type=radio]), select, textarea {
   min-height: 44px; border: 1px solid #cbd4c6; padding: .58rem .72rem; border-radius: .6rem; background: var(--paper);
   color: var(--ink); font-size: 1rem;
 }
+/* iOS WebKit can add the native date control's padding to its declared width. */
+input[type=date] { box-sizing: border-box; max-width: 100%; padding: 0; }
+input[type=date]::-webkit-date-and-time-value { margin-inline: .72rem; text-align: start; }
 input[type=checkbox], input[type=radio] { width: 1.15rem; height: 1.15rem; accent-color: var(--green); flex: none; }
 textarea { min-height: 6rem; resize: vertical; }
 fieldset { min-width: 0; }
@@ -52,11 +55,14 @@ legend { font-weight: 670; margin-bottom: .6rem; }
 .button.quiet { color: var(--green-dark); }
 .button.danger { color: var(--danger); border-color: #ecd1c7; background: #fff8f3; }
 .button.danger:hover { background: #f9e3d9; }
-.field { display: grid; gap: .28rem; min-width: 0; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr); gap: .28rem; min-width: 0; }
 .field > label { font-weight: 640; font-size: .88rem; }
 .field small { font-size: .79rem; }
 .stack { display: grid; gap: 1rem; align-content: start; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px),1fr)); gap: .85rem; align-items: start; }
+@media (max-width: 480px) {
+  .form-grid > .field:has(> input[type=date]) { grid-column: 1 / -1; }
+}
 .full { grid-column: 1 / -1; }
 .row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
 .between { justify-content: space-between; }

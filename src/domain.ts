@@ -27,6 +27,14 @@ export function convert(quantity: Decimal.Value, from: Unit, to: Unit): Decimal 
   return new D(quantity).times(source[1]).dividedBy(target[1])
 }
 
+export function packageContents(batch: Batch) {
+  if (batch.mode !== 'count' || !batch.net_quantity || !batch.net_unit) return null
+  return {
+    unit: batch.net_unit,
+    remaining: new D(batch.quantity).times(batch.net_quantity).minus(batch.contents_used ?? 0),
+  }
+}
+
 export function formatQuantity(quantity: number, unit: Unit) {
   if (unit === 'level') return levels.find(([value]) => value === quantity)?.[1] ?? 'Unknown level'
   const amount = new Intl.NumberFormat(undefined, { maximumFractionDigits: 8 }).format(quantity)
@@ -126,8 +134,11 @@ export function getRecipeAvailability(needs: Need[], batches: Batch[], preferred
       const perUnit = asBatchQuantity(batch, 1, need.unit)
       if (!perUnit || perUnit.lte(0)) continue
       const wholePackage = batch.mode === 'count' && batch.unit !== need.unit
+      const alreadyUsed = wholePackage && available.eq(batch.quantity)
+        ? convert(batch.contents_used ?? 0, batch.net_unit!, need.unit) ?? new D(0)
+        : new D(0)
       // A unit that cannot be divided is consumed in whole numbers. Show that deduction in the review.
-      const raw = missing.dividedBy(perUnit)
+      const raw = missing.plus(alreadyUsed).dividedBy(perUnit)
       const demand = batch.mode === 'count'
         ? raw.ceil()
         : raw.toDecimalPlaces(8, Decimal.ROUND_HALF_UP)
@@ -135,7 +146,7 @@ export function getRecipeAvailability(needs: Need[], batches: Batch[], preferred
       if (amount.lte(0)) continue
       remaining.set(batch.id, available.minus(amount))
       allocations.push({ batch, amount: amount.toNumber(), wholePackage })
-      missing = missing.minus(amount.times(perUnit))
+      missing = missing.minus(amount.times(perUnit).minus(alreadyUsed))
       if (batch.mode === 'exact' && amount.eq(demand)) missing = new D(0)
     }
     return { need, allocations, missing: D.max(0, missing).toDecimalPlaces(8, Decimal.ROUND_UP).toNumber() }
@@ -176,7 +187,11 @@ export function lowStock(kitchen: Kitchen) {
       const level = Math.max(0, ...approximate.map((batch) => batch.quantity))
       return level <= threshold ? [{ ingredient, quantity: 1, unit: 'package' as Unit }] : []
     }
-    const amount = batches.reduce((total, batch) => total.plus(asBatchQuantity(batch, batch.quantity, unit) ?? 0), new D(0))
+    const amount = batches.reduce((total, batch) => {
+      const contents = packageContents(batch)
+      const available = contents && convert(contents.remaining, contents.unit, unit)
+      return total.plus(available ?? asBatchQuantity(batch, batch.quantity, unit) ?? 0)
+    }, new D(0))
     if (amount.gt(threshold)) return []
     const needed = D.max(1, new D(threshold).minus(amount))
     return [{ ingredient, quantity: roundQuantity(countUnits.includes(unit) ? needed.ceil() : needed), unit }]

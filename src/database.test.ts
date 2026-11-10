@@ -47,7 +47,7 @@ beforeAll(async () => {
     grant usage on schema auth to anon, authenticated, service_role;
     insert into auth.users values ('${owner}'),('${stranger}');
   `)
-  const migrations = ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql']
+  const migrations = ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql', '20261109000400_package_contents.sql']
   for (const file of migrations) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), 'utf8'))
   await actor(owner)
   kitchen = (await db.query<{ id: string }>('select public.initialize_kitchen() as id')).rows[0].id
@@ -159,6 +159,21 @@ describe('PostgreSQL migrations and inventory RPC', () => {
     expect(result.event_id).toBeUndefined()
     await rpc('undo', { transaction_id: result.transaction_id })
     expect((await batches()).find((row) => row.id === batch_id)?.quantity).toBe('1.00000000')
+  })
+
+  it('uses measured contents, retains the open carton, and reverses consumption', async () => {
+    const milk = await add(fridge, 1, { name: 'Milk', category: 'Dairy & eggs', mode: 'count', unit: 'bottle', net_quantity: 52, net_unit: 'fl oz' })
+    const read = async () => (await db.query('select quantity::float8 as count, (quantity * net_quantity - contents_used)::float8 as remaining, revision from public.inventory_batches where id=$1', [milk.batch_id])).rows[0]
+    const payload = { id: milk.batch_id, revision: 0, amount: 8, content_unit: 'fl oz' }
+    const key = crypto.randomUUID()
+    const used = await rpc('consume', payload, key)
+    expect(await rpc('consume', payload, key)).toEqual(used)
+    expect(await read()).toMatchObject({ count: 1, remaining: 44 })
+    await expect(rpc('consume', { ...payload, revision: 1, amount: 45 })).rejects.toThrow(/not enough/i)
+    const finished = await rpc('consume', { ...payload, revision: 1, amount: 44 })
+    expect(await read()).toMatchObject({ count: 0, remaining: 0 })
+    await rpc('undo', { transaction_id: finished.transaction_id })
+    expect(await read()).toMatchObject({ count: 1, remaining: 44 })
   })
 
   it('rejects direct writes and protects another kitchen even with its exact ID', async () => {
