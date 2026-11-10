@@ -1,0 +1,3 @@
+project_id = "kitchen-os"
+[functions.product-lookup]
+verify_jwt = true
