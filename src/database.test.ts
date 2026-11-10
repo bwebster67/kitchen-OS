@@ -10,6 +10,8 @@ let fridge: string
 let freezer: string
 let beef: string
 let secondBatch: string
+let legacyKitchen: string
+let legacyRows: unknown[]
 
 async function actor(user: string, role = 'authenticated') {
   await db.exec(`reset role; set role ${role};`)
@@ -37,6 +39,20 @@ function add(location: string, quantity: number, other: Record<string, unknown> 
   })
 }
 
+async function manage(action: string, payload: Record<string, unknown>, target = kitchen) {
+  return (await db.query<{ id: string }>('select public.manage_kitchen($1::uuid,$2,$3::jsonb) as id',
+    [target, action, JSON.stringify(payload)])).rows[0].id
+}
+
+async function legacySnapshot() {
+  return (await db.query(`select i.id as ingredient_id, i.name as ingredient_name, p.id as product_id, p.barcode,
+    b.id as batch_id, b.quantity, b.contents_used, r.id as recipe_id, l.quantity as recipe_amount, l.unit
+    from public.ingredients i join public.products p on p.ingredient_id=i.id
+    join public.inventory_batches b on b.ingredient_id=i.id and b.product_id=p.id
+    join public.recipe_ingredients l on l.ingredient_id=i.id join public.recipes r on r.id=l.recipe_id
+    where i.kitchen_id=$1`, [legacyKitchen])).rows
+}
+
 beforeAll(async () => {
   db = new PGlite()
   await db.exec(`
@@ -49,6 +65,17 @@ beforeAll(async () => {
   `)
   const migrations = ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql', '20261109000400_package_contents.sql']
   for (const file of migrations) await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), 'utf8'))
+  await actor(stranger)
+  legacyKitchen = (await db.query<{ id: string }>('select public.initialize_kitchen() as id')).rows[0].id
+  const legacyLocation = (await db.query<{ id: string }>("select id from public.locations where name='Pantry'")).rows[0].id
+  const legacyBatch = await rpc('add', { name: 'Legacy Brand Rice', barcode: '4006381333931', brand: 'Legacy Brand',
+    mode: 'count', unit: 'package', net_quantity: 400, net_unit: 'g', quantity: 2, purchased_on: '2026-11-01', location_id: legacyLocation },
+  crypto.randomUUID(), legacyKitchen)
+  await rpc('consume', { id: legacyBatch.batch_id, revision: 0, amount: 100, content_unit: 'g' }, crypto.randomUUID(), legacyKitchen)
+  await manage('recipe_save', { name: 'Legacy rice recipe', servings: 2, ingredients: [{ name: 'Legacy Brand Rice', quantity: 200, unit: 'g' }] }, legacyKitchen)
+  legacyRows = await legacySnapshot()
+  await db.exec('reset role')
+  await db.exec(await readFile(new URL('../supabase/migrations/20261110000100_canonical_ingredients.sql', import.meta.url), 'utf8'))
   await actor(owner)
   kitchen = (await db.query<{ id: string }>('select public.initialize_kitchen() as id')).rows[0].id
   const locations = (await db.query<{ id: string; name: string }>('select id,name from public.locations')).rows
@@ -174,6 +201,78 @@ describe('PostgreSQL migrations and inventory RPC', () => {
     expect(await read()).toMatchObject({ count: 0, remaining: 0 })
     await rpc('undo', { transaction_id: finished.transaction_id })
     expect(await read()).toMatchObject({ count: 1, remaining: 44 })
+  })
+
+  it('preserves legacy recipe links, barcode associations, counts and used contents during migration', async () => {
+    await actor(stranger)
+    try {
+      expect(legacyRows).toHaveLength(1)
+      expect(await legacySnapshot()).toEqual(legacyRows)
+    } finally { await actor(owner) }
+  })
+
+  it('changes a barcode mapping for future additions only when explicitly confirmed', async () => {
+    await actor(stranger)
+    try {
+      const barcode = '4006381333931'
+      const lookup = async () => (await db.query<{ id: string; ingredient_id: string }>(
+        'select id,ingredient_id from public.products where barcode=$1', [barcode])).rows[0]
+      const location = (await db.query<{ id: string }>("select id from public.locations where name='Pantry'")).rows[0].id
+      const original = await lookup()
+      const payload = { name: 'New label for the legacy product', barcode, mode: 'count', unit: 'package',
+        quantity: 1, net_quantity: 400, net_unit: 'g', purchased_on: '2026-11-02', location_id: location }
+      const unchanged = await rpc('add', payload, crypto.randomUUID(), legacyKitchen)
+      expect(await lookup()).toEqual(original)
+      const relinked = await rpc('add', { ...payload, canonical_name: 'White Rice' }, crypto.randomUUID(), legacyKitchen)
+      const current = await lookup()
+      expect(current.id).toBe(original.id)
+      expect(current.ingredient_id).not.toBe(original.ingredient_id)
+      expect((await db.query('select ingredient_id from public.inventory_batches where id=$1', [unchanged.batch_id])).rows[0])
+        .toEqual({ ingredient_id: original.ingredient_id })
+      expect((await db.query('select ingredient_id from public.inventory_batches where id=$1', [relinked.batch_id])).rows[0])
+        .toEqual({ ingredient_id: current.ingredient_id })
+      expect((await db.query('select ingredient_id from public.recipe_ingredients')).rows[0])
+        .toEqual({ ingredient_id: original.ingredient_id })
+    } finally { await actor(owner) }
+  })
+
+  it('reuses a recipe-only ingredient across brands and atomically deducts and reverses measured contents', async () => {
+    const recipe = await manage('recipe_save', { name: 'Rice', servings: 2,
+      ingredients: [{ name: 'White Rice', quantity: 600, unit: 'g', preparation_notes: 'Rinse first' }] })
+    const line = (await db.query<{ ingredient_id: string; preparation_notes: string }>(
+      'select ingredient_id,preparation_notes from public.recipe_ingredients where recipe_id=$1', [recipe])).rows[0]
+    expect(line.preparation_notes).toBe('Rinse first')
+    expect((await db.query('select id from public.inventory_batches where ingredient_id=$1', [line.ingredient_id])).rows).toEqual([])
+    await manage('ingredient_settings', { id: line.ingredient_id, restrictions: [], aliases: ['Plain rice', 'plain  rice'], grams_per_cup: 190 })
+    expect((await db.query('select cardinality(aliases) as alias_count, grams_per_cup::float8 from public.ingredients where id=$1', [line.ingredient_id])).rows[0])
+      .toEqual({ alias_count: 1, grams_per_cup: 190 })
+    await expect(manage('ingredient_settings', { id: line.ingredient_id, restrictions: [], aliases: ['Ground Beef'] }))
+      .rejects.toThrow(/already identifies another ingredient/i)
+    await manage('recipe_save', { name: 'Alias recipe', servings: 2, ingredients: [{ name: 'plain rice', quantity: 1, unit: 'cup' }] })
+    expect((await db.query('select ingredient_id from public.recipe_ingredients where ingredient_id=$1', [line.ingredient_id])).rows).toHaveLength(2)
+    const first = await add(fridge, 1, { name: 'Mahatma White Rice', brand: 'Mahatma', barcode: '11111111',
+      canonical_name: 'White Rice', ingredient_id: line.ingredient_id, mode: 'count', unit: 'package', net_quantity: 400, net_unit: 'g' })
+    const second = await add(fridge, 1, { name: 'Great Value White Rice', brand: 'Great Value', barcode: '22222222',
+      canonical_name: 'Plain rice', mode: 'count', unit: 'package', net_quantity: 500, net_unit: 'g' })
+    expect((await db.query('select brand from public.products where ingredient_id=$1 order by brand', [line.ingredient_id])).rows)
+      .toEqual([{ brand: 'Great Value' }, { brand: 'Mahatma' }])
+    const read = async () => (await db.query(`select quantity::float8, contents_used::float8 from public.inventory_batches
+      where id in ($1,$2) order by net_quantity`, [first.batch_id, second.batch_id])).rows
+    const key = crypto.randomUUID()
+    const payload = { name: 'Rice', recipe_id: recipe, servings: 2, deductions: [
+      { id: first.batch_id, revision: 0, amount: 400, content_unit: 'g' },
+      { id: second.batch_id, revision: 0, amount: 200, content_unit: 'g' },
+    ] }
+    await expect(rpc('cook', { ...payload, deductions: [payload.deductions[0], { ...payload.deductions[1], content_unit: 'cup' }] })).rejects.toThrow(/different unit/i)
+    await expect(rpc('cook', { ...payload, deductions: [payload.deductions[0], { ...payload.deductions[1], amount: 501 }] })).rejects.toThrow(/not enough/i)
+    expect(await read()).toEqual([{ quantity: 1, contents_used: 0 }, { quantity: 1, contents_used: 0 }])
+    const cooked = await rpc('cook', payload, key)
+    expect(await rpc('cook', payload, key)).toEqual(cooked)
+    expect(await read()).toEqual([{ quantity: 0, contents_used: 0 }, { quantity: 1, contents_used: 200 }])
+    expect((await db.query('select quantity::float8,unit from public.cooking_event_ingredients where event_id=$1 order by quantity', [cooked.event_id])).rows)
+      .toEqual([{ quantity: 200, unit: 'g' }, { quantity: 400, unit: 'g' }])
+    await rpc('undo', { transaction_id: cooked.transaction_id })
+    expect(await read()).toEqual([{ quantity: 1, contents_used: 0 }, { quantity: 1, contents_used: 0 }])
   })
 
   it('rejects direct writes and protects another kitchen even with its exact ID', async () => {

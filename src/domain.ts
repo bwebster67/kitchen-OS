@@ -19,6 +19,14 @@ export function roundQuantity(quantity: Decimal.Value, precision = 8) {
   return new D(quantity).toDecimalPlaces(precision).toNumber()
 }
 
+export function findIngredient(ingredients: Ingredient[], name: string) {
+  const key = nameKey(name)
+  const exact = ingredients.find((ingredient) => ingredient.name_key === key)
+  if (exact) return exact
+  const aliases = ingredients.filter((ingredient) => ingredient.aliases?.some((alias) => nameKey(alias) === key))
+  return aliases.length === 1 ? aliases[0] : undefined
+}
+
 export function convert(quantity: Decimal.Value, from: Unit, to: Unit): Decimal | null {
   if (from === to) return new D(quantity)
   const source = measure[from]
@@ -64,17 +72,15 @@ export function freshness(batch: Batch, window: number, today = localDate()): 'p
   return days < 0 ? 'past' : days <= window ? 'soon' : 'later'
 }
 
+function batchUseRank(batch: Batch, today: string) {
+  const date = freshnessDate(batch)
+  return batch.is_frozen ? 1 : date && date < today ? 2 : 0
+}
+
 export function sortBatches(batches: Batch[], today = localDate()) {
-  return [...batches].sort((a, b) => {
-    // Favor usable non-expired batches, then earlier entered dates, then oldest purchases.
-    const rank = (batch: Batch) => {
-      const date = freshnessDate(batch)
-      return batch.is_frozen ? 1 : date && date < today ? 2 : 0
-    }
-    return rank(a) - rank(b)
-      || (freshnessDate(a) ?? '9999').localeCompare(freshnessDate(b) ?? '9999')
-      || a.purchased_on.localeCompare(b.purchased_on) || a.id.localeCompare(b.id)
-  })
+  return [...batches].sort((a, b) => batchUseRank(a, today) - batchUseRank(b, today)
+    || (freshnessDate(a) ?? '9999').localeCompare(freshnessDate(b) ?? '9999')
+    || a.purchased_on.localeCompare(b.purchased_on) || a.id.localeCompare(b.id))
 }
 
 function asBatchQuantity(batch: Batch, quantity: Decimal.Value, target: Unit): Decimal | null {
@@ -100,9 +106,9 @@ export function combinedQuantities(batches: Batch[]) {
   return [...totals].map(([unit, quantity]) => formatQuantity(quantity.toNumber(), unit)).concat(approximate).join(' + ') || 'Empty'
 }
 
-export interface Need { ingredient_id: string; quantity: number; unit: Unit }
-export interface Allocation { batch: Batch; amount?: number; wholePackage?: boolean }
-export interface Availability { need: Need; allocations: Allocation[]; missing: number }
+export interface Need { ingredient_id: string; quantity: number; unit: Unit; preparation_notes?: string }
+export interface Allocation { batch: Batch; amount?: number; contentAmount?: number; contentUnit?: Unit }
+export interface Availability { need: Need; allocations: Allocation[]; missing: number; incompatible: boolean }
 
 export function scaleNeeds(needs: Need[], base: number, servings: number): Need[] {
   if (!Number.isInteger(servings) || servings < 1 || !Number.isInteger(base) || base < 1) return []
@@ -112,15 +118,22 @@ export function scaleNeeds(needs: Need[], base: number, servings: number): Need[
   }))
 }
 
-export function getRecipeAvailability(needs: Need[], batches: Batch[], preferred: Record<number, string> = {}): Availability[] {
-  const ordered = sortBatches(batches.filter((batch) => !batch.archived && batch.quantity > 0))
-  const remaining = new Map(ordered.map((batch) => [batch.id, new D(batch.quantity)]))
+export function getRecipeAvailability(
+  needs: Need[], batches: Batch[], preferred: Record<number, string> = {}, ingredients: Ingredient[] = [],
+): Availability[] {
+  const today = localDate()
+  const ordered = batches.filter((batch) => !batch.archived && batch.quantity > 0).sort((a, b) =>
+    batchUseRank(a, today) - batchUseRank(b, today)
+    || a.purchased_on.localeCompare(b.purchased_on) || a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id))
+  const remaining = new Map(ordered.map((batch) => [batch.id, packageContents(batch)?.remaining ?? new D(batch.quantity)]))
   return needs.map((need, index) => {
+    const density = ingredients.find((ingredient) => ingredient.id === need.ingredient_id)?.grams_per_cup
     const candidates = ordered.filter((batch) => batch.ingredient_id === need.ingredient_id)
     const first = preferred[index]
     if (first) candidates.sort((a, b) => Number(b.id === first) - Number(a.id === first))
     const allocations: Allocation[] = []
     let missing = new D(need.quantity)
+    let incompatible = false
     for (const batch of candidates) {
       if (missing.lte(0)) break
       const available = remaining.get(batch.id)!
@@ -128,36 +141,49 @@ export function getRecipeAvailability(needs: Need[], batches: Batch[], preferred
       if (need.unit === 'level') {
         if (batch.mode !== 'approximate') continue
         allocations.push({ batch })
+        remaining.set(batch.id, new D(0))
         missing = new D(0)
         break
       }
-      const perUnit = asBatchQuantity(batch, 1, need.unit)
-      if (!perUnit || perUnit.lte(0)) continue
-      const wholePackage = batch.mode === 'count' && batch.unit !== need.unit
-      const alreadyUsed = wholePackage && available.eq(batch.quantity)
-        ? convert(batch.contents_used ?? 0, batch.net_unit!, need.unit) ?? new D(0)
-        : new D(0)
-      // A unit that cannot be divided is consumed in whole numbers. Show that deduction in the review.
-      const raw = missing.plus(alreadyUsed).dividedBy(perUnit)
-      const demand = batch.mode === 'count'
-        ? raw.ceil()
-        : raw.toDecimalPlaces(8, Decimal.ROUND_HALF_UP)
-      const amount = D.min(available, demand)
+      const contents = packageContents(batch)
+      const measuredPackage = contents && need.unit !== batch.unit
+      const unit = measuredPackage ? contents.unit : batch.unit
+      let perUnit = batch.mode === 'approximate' ? null : convert(1, unit, need.unit)
+      if (!perUnit && density && density > 0) {
+        const sourceKind = measure[unit]?.[0]
+        const targetKind = measure[need.unit]?.[0]
+        if (sourceKind === 'weight' && targetKind === 'volume') {
+          perUnit = convert(convert(1, unit, 'g')!.dividedBy(density), 'cup', need.unit)
+        } else if (sourceKind === 'volume' && targetKind === 'weight') {
+          perUnit = convert(convert(1, unit, 'cup')!.times(density), 'g', need.unit)
+        }
+      }
+      if (!perUnit) {
+        incompatible = true
+        continue
+      }
+      const raw = missing.dividedBy(perUnit)
+      const count = batch.mode === 'count' && !measuredPackage
+      const demand = count ? raw.floor() : raw.toDecimalPlaces(8, Decimal.ROUND_HALF_UP)
+      const stock = contents && !measuredPackage ? available.dividedBy(batch.net_quantity!).ceil() : available
+      const amount = D.min(stock, demand)
       if (amount.lte(0)) continue
-      remaining.set(batch.id, available.minus(amount))
-      allocations.push({ batch, amount: amount.toNumber(), wholePackage })
-      missing = missing.minus(amount.times(perUnit).minus(alreadyUsed))
-      if (batch.mode === 'exact' && amount.eq(demand)) missing = new D(0)
+      const used = contents && !measuredPackage ? available.minus(stock.minus(amount).times(batch.net_quantity!)) : amount
+      remaining.set(batch.id, available.minus(used))
+      allocations.push({ batch, amount: amount.toNumber(),
+        ...(contents ? { contentAmount: used.toNumber() } : {}), ...(measuredPackage ? { contentUnit: unit } : {}) })
+      missing = !count && amount.eq(demand) ? new D(0) : missing.minus(amount.times(perUnit))
     }
-    return { need, allocations, missing: D.max(0, missing).toDecimalPlaces(8, Decimal.ROUND_UP).toNumber() }
+    return { need, allocations, missing: D.max(0, missing).toDecimalPlaces(8, Decimal.ROUND_UP).toNumber(), incompatible }
   })
 }
 
-export function deductionsFor(plan: Availability[], levelsByBatch: Record<string, string>) {
-  const combined = new Map<string, { id: string; revision: number; amount?: number; remaining?: number }>()
+export function deductionsFor(plan: Availability[], levelsByBatch: Record<string, string>, allowPartial = false) {
+  const combined = new Map<string, { id: string; revision: number; amount?: number; remaining?: number; content_unit?: Unit }>()
+  const contentTotals = new Map<string, Decimal>()
   for (const row of plan) {
-    if (row.missing > 0) throw new Error('Resolve missing ingredients before cooking.')
-    for (const { batch, amount } of row.allocations) {
+    if (row.missing > 0 && !allowPartial) throw new Error('Resolve missing ingredients or confirm a partial deduction.')
+    for (const { batch, amount, contentAmount, contentUnit } of row.allocations) {
       if (amount === undefined) {
         const input = levelsByBatch[batch.id]
         const remaining = Number(input)
@@ -166,8 +192,12 @@ export function deductionsFor(plan: Availability[], levelsByBatch: Record<string
         }
         combined.set(batch.id, { id: batch.id, revision: batch.revision, remaining })
       } else {
-        const previous = combined.get(batch.id)?.amount ?? 0
-        combined.set(batch.id, { id: batch.id, revision: batch.revision, amount: roundQuantity(new D(previous).plus(amount)) })
+        if (contentAmount !== undefined) contentTotals.set(batch.id, (contentTotals.get(batch.id) ?? new D(0)).plus(contentAmount))
+        const previous = combined.get(batch.id)
+        const measuredUnit = contentUnit ?? previous?.content_unit
+        combined.set(batch.id, { id: batch.id, revision: batch.revision, ...(measuredUnit
+          ? { amount: roundQuantity(contentTotals.get(batch.id)!), content_unit: measuredUnit }
+          : { amount: roundQuantity(new D(previous?.amount ?? 0).plus(amount)) }) })
       }
     }
   }
@@ -234,7 +264,7 @@ export function recommendations(kitchen: Kitchen): Recommendation[] {
     if (!lines.length) continue
     const ingredients = kitchen.ingredients.filter((item) => lines.some((line) => line.ingredient_id === item.id))
     if (!recipeAllowed(recipe, ingredients, kitchen)) continue
-    const plan = getRecipeAvailability(lines, batches)
+    const plan = getRecipeAvailability(lines, batches, {}, ingredients)
     const missing = plan.filter((row) => row.missing > 0)
     const reasons: string[] = []
     let score = 45 * (1 - missing.length / lines.length)

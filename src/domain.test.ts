@@ -52,11 +52,48 @@ describe('inventory and recipe planning', () => {
     expect(deductionsFor(result, {})).toEqual([{ id: 'b', revision: 0, amount: .25 }, { id: 'a', revision: 0, amount: .25 }])
   })
 
-  it('uses package net contents with a visible whole-package deduction', () => {
+  it('deducts only the measured contents of a package', () => {
     const item = batch({ mode: 'count', unit: 'can', net_quantity: 400, net_unit: 'g' })
     const result = getRecipeAvailability([{ ingredient_id: 'beef', quantity: 100, unit: 'g' }], [item])
-    expect(result[0].allocations[0]).toMatchObject({ amount: 1, wholePackage: true })
+    expect(result[0].allocations[0]).toMatchObject({ amount: 100, contentUnit: 'g' })
     expect(result[0].missing).toBe(0)
+    expect(deductionsFor(result, {})).toEqual([{ id: 'a', revision: 0, amount: 100, content_unit: 'g' }])
+  })
+
+  it('combines compatible stock oldest first and only deducts available amounts after confirmation', () => {
+    const older = batch({ id: 'z', product_id: 'brand-a', quantity: 1, unit: 'package', mode: 'count',
+      net_quantity: 400, net_unit: 'g', contents_used: 100, purchased_on: '2026-11-01' })
+    const newer = batch({ id: 'a', product_id: 'brand-b', quantity: .25, unit: 'kg', purchased_on: '2026-11-02' })
+    const volume = batch({ id: 'volume', quantity: 2, unit: 'cup' })
+    const plan = getRecipeAvailability([{ ingredient_id: 'beef', quantity: 600, unit: 'g' }], [newer, older, volume])
+    expect(plan[0]).toMatchObject({ missing: 50, incompatible: true })
+    expect(() => deductionsFor(plan, {})).toThrow(/missing/i)
+    expect(deductionsFor(plan, {}, true)).toEqual([
+      { id: 'z', revision: 0, amount: 300, content_unit: 'g' }, { id: 'a', revision: 0, amount: .25 },
+    ])
+    expect(getRecipeAvailability([{ ingredient_id: 'beef', quantity: 1, unit: 'cup' }], [older])[0])
+      .toMatchObject({ missing: 1, incompatible: true, allocations: [] })
+  })
+
+  it('reserves package counts and measured contents together without double deduction', () => {
+    const item = batch({ mode: 'count', unit: 'can', net_quantity: 400, net_unit: 'g', quantity: 2 })
+    const plan = getRecipeAvailability([
+      { ingredient_id: 'beef', quantity: 100, unit: 'g' }, { ingredient_id: 'beef', quantity: 1, unit: 'can' },
+    ], [item])
+    expect(plan.map((row) => row.missing)).toEqual([0, 0])
+    expect(deductionsFor(plan, {})).toEqual([{ id: 'a', revision: 0, amount: 400, content_unit: 'g' }])
+  })
+
+  it('uses a conversion for the specified ingredient only', () => {
+    const flour = { ...beef, id: 'flour', name: 'Flour', grams_per_cup: 120 }
+    const flourBag = batch({ ingredient_id: flour.id, mode: 'count', unit: 'package', net_quantity: 500, net_unit: 'g', quantity: 1 })
+    const byCup = getRecipeAvailability([{ ingredient_id: flour.id, quantity: 1, unit: 'cup' }], [flourBag], {}, [flour])
+    expect(deductionsFor(byCup, {})).toEqual([{ id: 'a', revision: 0, amount: 120, content_unit: 'g' }])
+    const byGram = getRecipeAvailability([{ ingredient_id: flour.id, quantity: 60, unit: 'g' }],
+      [batch({ ingredient_id: flour.id, unit: 'cup' })], {}, [flour])
+    expect(deductionsFor(byGram, {})).toEqual([{ id: 'a', revision: 0, amount: .5 }])
+    const unrelated = getRecipeAvailability([{ ingredient_id: 'beef', quantity: 1, unit: 'cup' }], [batch()], {}, [flour])
+    expect(unrelated[0]).toMatchObject({ missing: 1, incompatible: true })
   })
 
   it('requires a new approximate level and never treats it as a measure', () => {

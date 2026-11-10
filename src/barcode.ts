@@ -1,5 +1,6 @@
 import { supabase } from './data'
 import type { Mode, Product, Unit } from './model'
+import { nameKey } from './domain'
 
 export type BarcodeFormat = 'UPC_E' | 'EAN_8' | 'UPC_A' | 'EAN_13' | 'GTIN'
 export interface ProductMatch {
@@ -93,6 +94,19 @@ export function barcodeDefaults(product: ProductMatch, catalogCategory?: string,
   const quantity = mode === 'exact' && size ? size.net_quantity : hasCount ? packCount : 1
   const netSize = hasCount ? savedSize ?? perPackage : size
   return { category, mode, unit, quantity, ...netSize }
+}
+
+export function suggestCanonicalName(name: string, brand?: string | null) {
+  let generic = name.trim()
+  for (const entry of (brand ?? '').split(',')) {
+    const prefix = entry.trim()
+    if (prefix && generic.toLowerCase().startsWith(`${prefix.toLowerCase()} `)) {
+      generic = generic.slice(prefix.length).trim()
+      break
+    }
+  }
+  // Only collapse the exact plain white rice names. Keep qualifiers such as instant or seasoned.
+  return /^(?:(?:extra )?long[ -]grain )?white rice$/.test(nameKey(generic)) ? 'White Rice' : generic
 }
 
 export interface ProductProvider { lookup(barcode: string): Promise<ProductMatch | null> }

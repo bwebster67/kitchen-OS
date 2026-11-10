@@ -97,11 +97,14 @@ function Threshold({ item }: { item: Ingredient }) {
   const [quantity, setQuantity] = useState(item.low_quantity?.toString() ?? '')
   const [unit, setUnit] = useState<Unit>(item.low_unit ?? 'count')
   const [restrictions, setRestrictions] = useState(item.restrictions.join(', '))
+  const [aliases, setAliases] = useState(item.aliases?.join(', ') ?? '')
+  const [gramsPerCup, setGramsPerCup] = useState(item.grams_per_cup?.toString() ?? '')
   return <details className="batch"><summary>{item.name}{item.low_quantity !== null ? ' · threshold set' : ''}</summary>
     <form className="stack form-details" onSubmit={(event) => {
       event.preventDefault()
       void manage('ingredient_settings', {
-        id: item.id, low_quantity: quantity === '' ? null : Number(quantity), low_unit: quantity === '' ? null : unit, restrictions: splitList(restrictions),
+        id: item.id, low_quantity: quantity === '' ? null : Number(quantity), low_unit: quantity === '' ? null : unit,
+        restrictions: splitList(restrictions), aliases: splitList(aliases), grams_per_cup: gramsPerCup === '' ? null : Number(gramsPerCup),
       }).catch(() => {})
     }}>
       <div className="form-grid">
@@ -110,6 +113,10 @@ function Threshold({ item }: { item: Ingredient }) {
           <option value="">Disabled</option>{levels.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
         </select> : <input type="number" min="0" max="1000000" step=".00000001" value={quantity} onChange={(event) => setQuantity(event.target.value)} />}</Field>
         <Field label="Allergen and ingredient labels"><input maxLength={500} value={restrictions} onChange={(event) => setRestrictions(event.target.value)} /></Field>
+        <Field label="Ingredient aliases" hint="Enter equivalent names separated by commas."><input maxLength={500} value={aliases} onChange={(event) => setAliases(event.target.value)} /></Field>
+        <Field label="Grams per US cup" hint="Optional. Use a reliable weight for one cup of this specific ingredient.">
+          <input type="number" inputMode="decimal" min=".00000001" max="1000000" step=".00000001" value={gramsPerCup} onChange={(event) => setGramsPerCup(event.target.value)} />
+        </Field>
       </div>
       <div><Button type="submit" variant="secondary" disabled={busy}>Save {item.name} settings</Button></div>
     </form>

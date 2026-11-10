@@ -3,8 +3,8 @@ import type { FormEvent } from 'react'
 import { ArrowLeft, Barcode, CalendarClock, PackagePlus, Search } from 'lucide-react'
 import { Link, useNavigate, useSearchParams } from 'react-router'
 import { useKitchen } from './context'
-import { activeBatches, categories, combinedQuantities, convert, displayDate, formatQuantity, freshness, freshnessDate, levels, localDate, measureUnits, modeUnits, nameKey, packageContents, roundQuantity, sortBatches, unitLabels } from './domain'
-import { barcodeDefaults, normalizeBarcode } from './barcode'
+import { activeBatches, categories, combinedQuantities, convert, displayDate, findIngredient, formatQuantity, freshness, freshnessDate, levels, localDate, measureUnits, modeUnits, packageContents, roundQuantity, sortBatches, unitLabels } from './domain'
+import { barcodeDefaults, normalizeBarcode, suggestCanonicalName } from './barcode'
 import type { ProductMatch } from './barcode'
 import type { Batch, DateType, Mode, ShoppingItem, Unit } from './model'
 import { Alert, Button, Empty, Field, PageTitle, Section, errorMessage } from './ui'
@@ -48,14 +48,20 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
 }) {
   const { kitchen, inventory, busy } = useKitchen()
   const ingredient = kitchen.ingredients.find((row) => row.id === batch?.ingredient_id)
+  const catalogProduct = barcode ? kitchen.products.find((row) => row.barcode === barcode) : undefined
+  const catalogIngredient = kitchen.ingredients.find((row) => row.id === catalogProduct?.ingredient_id)
+  const [canonicalName, setCanonicalName] = useState(() => {
+    const suggestion = product ? suggestCanonicalName(product.name, product.brand) : ''
+    return catalogIngredient?.name ?? findIngredient(kitchen.ingredients, suggestion)?.name ?? suggestion
+  })
+  const canonical = barcode ? findIngredient(kitchen.ingredients, canonicalName) : undefined
   const fallback = kitchen.locations.find((row) => row.name === 'Pantry')?.id ?? kitchen.locations[0]?.id ?? ''
   const [values, setValues] = useState(() => {
     if (batch && ingredient) return fromBatch(batch, ingredient.name, ingredient.category)
-    const catalogProduct = product?.source === 'catalog' ? kitchen.products.find((row) => row.barcode === barcode) : undefined
-    const catalogCategory = kitchen.ingredients.find((row) => row.id === catalogProduct?.ingredient_id)?.category
     const latestBatch = catalogProduct && kitchen.inventory_batches.filter((row) => row.product_id === catalogProduct.id)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
-    return newValues(fallback, barcode, product, item, catalogCategory, latestBatch?.unit)
+    const category = catalogIngredient?.category ?? (canonical?.category === 'Other' ? undefined : canonical?.category)
+    return newValues(fallback, barcode, product, item, category, latestBatch?.unit)
   })
   const [error, setError] = useState('')
   const [added, setAdded] = useState(0)
@@ -64,19 +70,20 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
   const nameInput = useRef<HTMLInputElement>(null)
   const categoryOptions = [...new Set([...categories, values.category])]
   const nameChanged = !batch && !item
+  const suggestedNames = kitchen.ingredients.flatMap((row) => [row.name, ...(row.aliases ?? [])])
   function update<K extends keyof Values>(key: K, value: Values[K]) { setValues((previous) => ({ ...previous, [key]: value })) }
 
   function recall() {
-    const known = kitchen.ingredients.find((row) => row.name_key === nameKey(values.name))
-    if (!known || batch || item) return
+    const known = findIngredient(kitchen.ingredients, values.name)
+    if (!known || batch || item || barcode) return
     const previous = kitchen.inventory_batches.filter((row) => row.ingredient_id === known.id)
       .sort((a, b) => b.created_at.localeCompare(a.created_at))[0]
     setValues((current) => ({
       ...current, name: known.name, category: known.category,
-      ...(previous && !barcode ? {
+      ...(previous ? {
         location_id: previous.location_id, mode: previous.mode, unit: previous.unit,
         quantity: previous.mode === 'approximate' ? '1' : current.quantity,
-      } : previous ? { location_id: previous.location_id } : {}),
+      } : {}),
     }))
   }
 
@@ -91,8 +98,10 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
         notes: values.notes.trim() || null, brand: values.brand.trim() || null, package_label: values.package_label.trim() || null,
         net_quantity: values.net_quantity ? Number(values.net_quantity) : null, net_unit: values.net_quantity ? values.net_unit : null,
         barcode: values.barcode ? normalizeBarcode(values.barcode, barcodeFormat) : null,
+        ...(barcode ? { canonical_name: canonicalName.trim(), ingredient_id: canonical?.id } : {}),
       }
       if (!values.name.trim()) throw new Error('Enter an item name.')
+      if (barcode && !canonicalName.trim()) throw new Error('Enter a canonical ingredient name.')
       if (batch) await inventory('edit', { ...payload, id: batch.id, revision: batch.revision, set_package_size: batch.mode === 'count' && !batch.contents_used })
       else if (item) await inventory('stock_shopping', { ...payload, shopping_item_id: item.id })
       else await inventory('add', payload)
@@ -110,9 +119,24 @@ export function GroceryForm({ barcode, product, item, batch, onSaved, submitLabe
     {added > 0 && <p role="status" className="muted">{added} {added === 1 ? 'grocery' : 'groceries'} added this session.</p>}
     <div className="form-grid">
       <div className="full">
-        <Field label="Item name"><input ref={nameInput} value={values.name} list={nameChanged ? suggestionsId : undefined} maxLength={120} autoComplete="off" onChange={(event) => update('name', event.target.value)} onBlur={recall} required readOnly={!nameChanged} /></Field>
-        {nameChanged && <datalist id={suggestionsId}>{kitchen.ingredients.map((row) => <option key={row.id} value={row.name} />)}</datalist>}
+        <Field label="Item name"><input ref={nameInput} value={values.name} list={nameChanged && !barcode ? suggestionsId : undefined} maxLength={120} autoComplete="off" onChange={(event) => {
+          if (barcode && !product && (!canonicalName || canonicalName === values.name)) setCanonicalName(event.target.value)
+          update('name', event.target.value)
+        }} onBlur={recall} required readOnly={!nameChanged} /></Field>
+        {nameChanged && <datalist id={suggestionsId}>{[...new Set(suggestedNames)].map((name) => <option key={name} value={name} />)}</datalist>}
       </div>
+      {barcode && <div className="full">
+        <Field label="Canonical ingredient" hint="Choose the generic ingredient recipes should use. Keep distinct varieties and dietary versions separate.">
+          <input list={suggestionsId} value={canonicalName} maxLength={120} autoComplete="off" required onChange={(event) => {
+            setCanonicalName(event.target.value)
+            const known = findIngredient(kitchen.ingredients, event.target.value)
+            if (known && known.category !== 'Other') update('category', known.category)
+          }} />
+        </Field>
+        {catalogIngredient && canonical?.id !== catalogIngredient.id
+          ? <p className="muted">This changes the barcode’s ingredient for future additions. Existing batches and recipes keep their links.</p>
+          : canonicalName.trim() && !canonical && <p className="muted">Saving will create this canonical ingredient.</p>}
+      </div>}
       <Field label="Tracking mode"><select value={values.mode} disabled={!!batch} onChange={(event) => {
         const mode = event.target.value as Mode
         setValues((current) => ({ ...current, mode, unit: modeUnits[mode][0], quantity: '1' }))
@@ -192,7 +216,7 @@ export function Inventory() {
   const selected = activeBatches(kitchen).filter((batch) => {
     const ingredient = ingredients.get(batch.ingredient_id)
     const product = kitchen.products.find((row) => row.id === batch.product_id)
-    const text = [ingredient?.name, product?.brand, product?.barcode, batch.notes].join(' ').toLowerCase()
+    const text = [ingredient?.name, product?.name, product?.brand, product?.barcode, batch.notes].join(' ').toLowerCase()
     return (!location || batch.location_id === location) && (!category || ingredient?.category === category)
       && (!status || freshness(batch, window) === status) && text.includes(query.trim().toLowerCase())
   })
@@ -267,7 +291,7 @@ function BatchCard({ batch, name, location, window }: { batch: Batch; name: stri
     {(batch.opened_on || batch.frozen_on || batch.thawed_on) && <p className="muted">{[
       batch.opened_on && `Opened ${displayDate(batch.opened_on)}`, batch.frozen_on && `Frozen ${displayDate(batch.frozen_on)}`, batch.thawed_on && `Thawed ${displayDate(batch.thawed_on)}`,
     ].filter(Boolean).join(' · ')}</p>}
-    {product && <p className="muted">{[product.brand, product.package_label, product.barcode].filter(Boolean).join(' · ')}</p>}
+    {product && <p className="muted">{[product.name === name ? null : product.name, product.brand, product.package_label, product.barcode].filter(Boolean).join(' · ')}</p>}
     {leftover && <p className="muted">Prepared food · {leftover.portions_prepared} portions made, {leftover.portions_eaten} eaten when cooked</p>}
     {batch.notes && <p>{batch.notes}</p>}
     <div className="row">

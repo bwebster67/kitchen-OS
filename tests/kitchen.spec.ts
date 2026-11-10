@@ -22,7 +22,7 @@ async function setup(page: Page) {
     grant usage on schema auth to authenticated;
     insert into auth.users values ('${user.id}');
   `)
-  for (const file of ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql', '20261109000400_package_contents.sql']) {
+  for (const file of ['20261109000100_schema.sql', '20261109000200_operations.sql', '20261109000300_product_cache.sql', '20261109000400_package_contents.sql', '20261110000100_canonical_ingredients.sql']) {
     await db.exec(await readFile(new URL(`../supabase/migrations/${file}`, import.meta.url), 'utf8'))
   }
   await db.exec('set role authenticated')
@@ -49,6 +49,14 @@ async function setup(page: Page) {
         lookups += 1
         const { barcode } = request.postDataJSON()
         if (barcode === '99999999') return respond({ error: 'Unavailable' }, 503)
+        if (barcode === '96385074' || barcode === '0012345000058') {
+          const first = barcode === '96385074'
+          return respond({ product: {
+            name: first ? 'Mahatma Extra Long Grain White Rice' : 'Great Value Long Grain White Rice',
+            brand: first ? 'Mahatma' : 'Great Value', package_label: first ? '400 g' : '500 g',
+            source: 'open_food_facts', category_tags: ['en:rices'], package_shapes: ['en:bag'],
+          } })
+        }
         if (barcode === '4006381333931') return respond({ product: {
           name: 'Ground beef', source: 'open_food_facts', product_quantity: 450, product_quantity_unit: 'g',
           category_tags: ['en:meats'],
@@ -90,7 +98,7 @@ async function setup(page: Page) {
         const column = url.searchParams.get('order')?.split('.')[0] ?? ''
         const order = orderColumns.has(column) ? ` order by ${column}` : ''
         const result = await db.query(`select * from public.${table} where ${filter}=$1::uuid${order}`, [id])
-        const numeric = ['quantity', 'price', 'net_quantity', 'contents_used', 'low_quantity', 'approximate_before', 'approximate_after']
+        const numeric = ['quantity', 'price', 'net_quantity', 'contents_used', 'low_quantity', 'grams_per_cup', 'approximate_before', 'approximate_after']
         const data = result.rows.map((raw) => {
           const row = { ...raw } as Record<string, unknown>
           for (const key of numeric) if (typeof row[key] === 'string') row[key] = Number(row[key])
@@ -362,6 +370,75 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await page.getByRole('button', { name: 'Confirm', exact: true }).click()
     await expect(page.getByText('300 g remaining')).toBeVisible()
     await expect(page.getByRole('heading', { name: 'Pantry · 1 can' })).toBeVisible()
+  } finally { await app.db.close() }
+})
+
+authenticated('creates a recipe with empty inventory and cooks from two barcode brands', async ({ page }) => {
+  const app = await setup(page)
+  try {
+    await signIn(page)
+    const nav = page.getByRole('navigation', { name: 'Main navigation' })
+    await nav.getByRole('link', { name: 'Meals' }).click()
+    await page.getByRole('link', { name: 'New recipe' }).click()
+    await page.getByLabel('Recipe name').fill('Rice bowl')
+    await page.getByLabel('Ingredient 1', { exact: true }).fill('White Rice')
+    await page.getByLabel('Amount', { exact: true }).fill('650')
+    await page.getByLabel('Unit', { exact: true }).selectOption('g')
+    await page.getByLabel('Preparation notes for ingredient 1').fill('Rinse before cooking')
+    await page.getByRole('button', { name: 'Save recipe' }).click()
+    await expect(page.getByText('Rinse before cooking')).toBeVisible()
+    await expect(page.getByText(/Short by 650 g/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Confirm cooking' })).toBeDisabled()
+    expect((await app.db.query('select id from public.inventory_batches')).rows).toEqual([])
+    const cookUrl = page.url()
+
+    await nav.getByRole('link', { name: 'Kitchen' }).click()
+    await page.getByRole('link', { name: 'Scan', exact: true }).click()
+    const canSimulate = await page.evaluate(() => typeof HTMLCanvasElement.prototype.captureStream === 'function')
+    for (const [barcode, name, date, pattern] of [
+      ['96385074', 'Mahatma Extra Long Grain White Rice', '2026-11-01', barcodePattern('9638', '5074')],
+      ['0012345000058', 'Great Value Long Grain White Rice', '2026-11-02', barcodePattern('123455', '', 0x29)],
+    ]) {
+      if (canSimulate) {
+        await installTestCamera(page, pattern)
+        await page.getByRole('button', { name: 'Open camera' }).click()
+      } else {
+        await page.getByLabel('Barcode', { exact: true }).fill(barcode)
+        await page.getByRole('button', { name: 'Look up barcode' }).click()
+      }
+      await expect(page.getByLabel('Item name')).toHaveValue(name)
+      await expect(page.getByLabel('Canonical ingredient')).toHaveValue('White Rice')
+      await page.getByLabel('Purchase date').fill(date)
+      await page.getByRole('button', { name: 'Add and scan another' }).click()
+      await expect(page.getByRole('heading', { name: 'Scan a barcode' })).toBeVisible()
+    }
+    await page.getByLabel('Barcode', { exact: true }).fill('0012345000058')
+    await page.getByRole('button', { name: 'Look up barcode' }).click()
+    await expect(page.getByText('Found in your kitchen catalog.')).toBeVisible()
+    await expect(page.getByLabel('Canonical ingredient')).toHaveValue('White Rice')
+    await page.getByRole('button', { name: 'Cancel review' }).click()
+    expect((await app.db.query('select distinct ingredient_id from public.products')).rows).toHaveLength(1)
+
+    await page.goto(cookUrl)
+    await expect(page.getByText(/400 g from Pantry.*Mahatma/)).toBeVisible()
+    await expect(page.getByText(/250 g from Pantry.*Great Value/)).toBeVisible()
+    await noHorizontalScroll(page)
+    await page.getByRole('button', { name: 'Confirm cooking' }).click()
+    await expect(page.getByRole('heading', { name: 'Ingredients used' })).toBeVisible()
+    expect((await app.db.query('select quantity::float8, contents_used::float8 from public.inventory_batches order by purchased_on')).rows)
+      .toEqual([{ quantity: 0, contents_used: 0 }, { quantity: 1, contents_used: 250 }])
+
+    await page.goto(cookUrl)
+    await page.getByLabel('Unit', { exact: true }).selectOption('cup')
+    await expect(page.getByText(/Some stock uses incompatible units/)).toBeVisible()
+    await page.getByLabel('Unit', { exact: true }).selectOption('g')
+    await expect(page.getByText(/Short by 400 g/)).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Confirm cooking' })).toBeDisabled()
+    await page.getByLabel('Record this meal and deduct only the available amounts').check()
+    await page.getByRole('button', { name: 'Confirm cooking' }).click()
+    await expect(page.getByRole('heading', { name: 'Ingredients used' })).toBeVisible()
+    expect((await app.db.query('select quantity::float8 from public.inventory_batches order by purchased_on')).rows)
+      .toEqual([{ quantity: 0 }, { quantity: 0 }])
   } finally { await app.db.close() }
 })
 

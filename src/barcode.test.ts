@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { barcodeDefaults, lookupProduct, normalizeBarcode, parsePackage } from './barcode'
+import { barcodeDefaults, lookupProduct, normalizeBarcode, parsePackage, suggestCanonicalName } from './barcode'
 import type { Product } from './model'
 
 describe('barcode lookup', () => {
@@ -13,7 +13,7 @@ describe('barcode lookup', () => {
   })
 
   it('uses the catalog before any external request', async () => {
-    const item: Product = { id: 'item', ingredient_id: 'rice', barcode: '0012345000058', name: 'Rice', brand: 'Brand', package_label: '1 kg', net_quantity: 1, net_unit: 'kg' }
+    const item = { id: 'item', ingredient_id: 'rice', barcode: '0012345000058', name: 'Rice', brand: 'Brand', package_label: '1 kg', net_quantity: 1, net_unit: 'kg' } satisfies Product
     const lookup = vi.fn()
     const result = await lookupProduct(item.barcode, [item], { lookup })
     expect(result.product).toMatchObject({ name: 'Rice', source: 'catalog' })
@@ -30,6 +30,13 @@ describe('barcode lookup', () => {
   it('extracts only unambiguous package measures', () => {
     expect(parsePackage('12 fl oz')).toEqual({ net_quantity: 12, net_unit: 'fl oz' })
     expect(parsePackage('2 × 400 g')).toBeNull()
+  })
+
+  it('suggests generic names for plain rice without discarding meaningful qualifiers', () => {
+    expect(suggestCanonicalName('Mahatma Extra Long Grain White Rice', 'Mahatma')).toBe('White Rice')
+    expect(suggestCanonicalName('Great Value Long Grain White Rice', 'Great Value')).toBe('White Rice')
+    expect(suggestCanonicalName('Great Value Instant White Rice', 'Great Value')).toBe('Instant White Rice')
+    expect(suggestCanonicalName('Mahatma Long Grain Brown Rice', 'Mahatma')).toBe('Long Grain Brown Rice')
   })
 
   it('keeps a bottle count and uses the label unit for its contents', () => {
