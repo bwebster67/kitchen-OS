@@ -207,20 +207,23 @@ function barcodePattern(left: string, right: string, evenParity = 0) {
   return '101' + start + (right ? '01010' + [...right].map((digit) => invert(odd[Number(digit)])).join('') + '101' : '010101')
 }
 
-async function installTestCamera(page: Page, pattern: string) {
-  await page.evaluate((pattern) => {
+async function installTestCamera(page: Page, pattern: string, rotated = false) {
+  await page.evaluate(({ pattern, rotated }) => {
     async function getUserMedia() {
       const canvas = document.createElement('canvas')
-      canvas.width = 640
-      canvas.height = 320
+      canvas.width = rotated ? 320 : 640
+      canvas.height = rotated ? 640 : 320
       const ctx = canvas.getContext('2d')!
       function draw() {
         ctx.fillStyle = 'white'
-        ctx.fillRect(0, 0, 640, 320)
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
         ctx.fillStyle = 'black'
+        ctx.save()
+        if (rotated) ctx.setTransform(0, 1, -1, 0, 320, 0)
         for (const [index, bit] of [...pattern].entries()) {
           if (bit === '1') ctx.fillRect(82 + index * 5, 75, 5, 170)
         }
+        ctx.restore()
       }
       draw()
       const stream = canvas.captureStream(15)
@@ -231,7 +234,7 @@ async function installTestCamera(page: Page, pattern: string) {
       return stream
     }
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
-  }, pattern)
+  }, { pattern, rotated })
 }
 
 authenticated('reviews barcodes once and handles local, unknown and failed lookups', async ({ page }) => {
@@ -271,13 +274,13 @@ authenticated('reviews barcodes once and handles local, unknown and failed looku
     await page.getByRole('button', { name: 'Cancel review' }).click()
     if (canSimulate) {
       const fixtures = [
-        { barcode: '4006381333931', pattern: barcodePattern('006381', '333931', 0x13) }, // EAN-13, lead digit 4
+        { barcode: '4006381333931', pattern: barcodePattern('006381', '333931', 0x13), rotated: true }, // Portrait EAN-13
         { barcode: '96385074', pattern: barcodePattern('9638', '5074') }, // EAN-8
         { barcode: '0012345000058', pattern: barcodePattern('123455', '', 0x29) }, // UPC-E, number system 0
         { barcode: '0112345000055', pattern: barcodePattern('123455', '', 0x19) }, // UPC-E, number system 1
       ]
-      for (const { barcode, pattern } of fixtures) {
-        await installTestCamera(page, pattern)
+      for (const { barcode, pattern, rotated } of fixtures) {
+        await installTestCamera(page, pattern, rotated)
         await page.getByRole('button', { name: 'Open camera' }).click()
         await expect(page.getByRole('heading', { name: 'Review grocery' })).toBeVisible()
         await expect(page.getByLabel('Barcode', { exact: true }), `Decoded barcode ${barcode}`).toHaveValue(barcode)

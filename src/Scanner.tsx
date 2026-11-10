@@ -47,20 +47,29 @@ export function Scanner() {
     if (!camera) return
     let stopped = false
     let stream: MediaStream | undefined
-    let controls: { stop: () => void } | undefined
+    let nextFrame: number | undefined
     const element = video.current
     function stop() {
       stopped = true
-      controls?.stop()
+      window.clearTimeout(nextFrame)
       stream?.getTracks().forEach((track) => track.stop())
       if (element) element.srcObject = null
     }
     async function start() {
       try {
         if (!navigator.mediaDevices?.getUserMedia || !element) throw new Error('Camera scanning requires a supported browser over HTTPS. Enter the barcode below.')
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false })
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } },
+          audio: false,
+        })
         if (stopped) { stream.getTracks().forEach((track) => track.stop()); return }
-        const [{ BrowserCodeReader }, { BarcodeFormat: ZXFormat }, { GroceryReader }] = await Promise.all([
+        const [track] = stream.getVideoTracks()
+        const capabilities = track?.getCapabilities?.() as (MediaTrackCapabilities & { focusMode?: string[] }) | undefined
+        if (capabilities?.focusMode?.includes('continuous')) {
+          const constraints: MediaTrackConstraints & { focusMode: string } = { ...track.getConstraints(), focusMode: 'continuous' }
+          void track.applyConstraints(constraints).catch(() => { /* Use the camera's default focus if it rejects the hint. */ })
+        }
+        const [{ BrowserCodeReader }, { BarcodeFormat: ZXFormat, NotFoundException, ChecksumException, FormatException }, { GroceryReader }] = await Promise.all([
           import('@zxing/browser'), import('@zxing/library'), import('./grocery-reader'),
         ])
         if (stopped) return
@@ -68,14 +77,46 @@ export function Scanner() {
           [ZXFormat.UPC_A]: 'UPC_A', [ZXFormat.UPC_E]: 'UPC_E', [ZXFormat.EAN_13]: 'EAN_13', [ZXFormat.EAN_8]: 'EAN_8',
         }
         const reader = new BrowserCodeReader(new GroceryReader())
-        controls = await reader.decodeFromStream(stream, element, (result, _error, active) => {
-          const format = result && formats[result.getBarcodeFormat()]
-          if (!stopped && result && format && handleScan.current(result.getText(), format)) {
-            active.stop()
-            stop()
+        const canvas = document.createElement('canvas')
+        const context = canvas.getContext('2d', { willReadFrequently: true })
+        if (!context) throw new Error('Camera frames are unavailable. Enter the barcode below.')
+        element.muted = true
+        element.srcObject = stream
+        await element.play()
+        if (stopped) return
+
+        let rotated = false
+        const decodeFrame = () => {
+          if (stopped) return
+          const { videoWidth, videoHeight, readyState } = element
+          if (readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && videoWidth && videoHeight) {
+            // Camera dimensions can change after playback starts or when the phone rotates.
+            const scale = Math.min(1, 1600 / Math.max(videoWidth, videoHeight))
+            const width = Math.round(videoWidth * scale)
+            const height = Math.round(videoHeight * scale)
+            const canvasWidth = rotated ? height : width
+            const canvasHeight = rotated ? width : height
+            if (canvas.width !== canvasWidth) canvas.width = canvasWidth
+            if (canvas.height !== canvasHeight) canvas.height = canvasHeight
+            context.setTransform(rotated ? 0 : 1, rotated ? 1 : 0, rotated ? -1 : 0, rotated ? 0 : 1, rotated ? height : 0, 0)
+            try {
+              context.drawImage(element, 0, 0, width, height)
+              const result = reader.decodeFromCanvas(canvas)
+              const format = formats[result.getBarcodeFormat()]
+              if (format && handleScan.current(result.getText(), format)) { stop(); return }
+            } catch (error) {
+              if (!(error instanceof NotFoundException || error instanceof ChecksumException || error instanceof FormatException)) {
+                stop()
+                setCamera(false)
+                setError('The camera opened, but its frames could not be read. Reopen the camera or enter the barcode below.')
+                return
+              }
+            }
+            rotated = !rotated
           }
-        })
-        if (stopped) controls.stop()
+          nextFrame = window.setTimeout(decodeFrame, 150)
+        }
+        decodeFrame()
       } catch (error) {
         if (stopped) return
         stop()
@@ -120,6 +161,7 @@ export function Scanner() {
       <section className="card stack">
         {camera ? <>
           <div className="camera"><video ref={video} autoPlay muted playsInline aria-label="Barcode scanner camera preview" /><div className="scan-target" aria-hidden="true" /></div>
+          <p className="muted">Keep the full barcode in view. If the bars look blurry, move the package back slowly until they sharpen.</p>
           <Button variant="secondary" onClick={() => setCamera(false)}>Stop camera</Button>
         </> : <div className="scanner-start"><ScanBarcode size={38} aria-hidden="true" /><Button onClick={() => { setError(''); setCamera(true) }}>Open camera</Button></div>}
       </section>
