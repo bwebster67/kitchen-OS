@@ -439,6 +439,22 @@ authenticated('creates a recipe with empty inventory and cooks from two barcode 
     await expect(page.getByRole('heading', { name: 'Ingredients used' })).toBeVisible()
     expect((await app.db.query('select quantity::float8 from public.inventory_batches order by purchased_on')).rows)
       .toEqual([{ quantity: 0 }, { quantity: 0 }])
+
+    await page.goto(cookUrl)
+    await page.getByLabel('Servings', { exact: true }).fill('4')
+    await page.getByRole('button', { name: 'Add meal ingredient' }).click()
+    await page.getByLabel('Ingredient 2', { exact: true }).fill('Fresh dill')
+    await page.getByLabel('Amount', { exact: true }).nth(1).fill('8')
+    await page.getByLabel('Unit', { exact: true }).nth(1).selectOption('g')
+    await page.getByRole('button', { name: 'Add meal ingredient' }).click()
+    await page.getByLabel('Ingredient 3', { exact: true }).fill('Lemon zest')
+    await page.getByRole('button', { name: 'Save ingredients to recipe' }).click()
+    await expect(page.getByText('Changes saved.', { exact: true })).toBeVisible()
+    await page.reload()
+    await expect(page.getByLabel('Ingredient 2', { exact: true })).toHaveValue('Fresh dill')
+    await expect(page.getByLabel('Ingredient 3', { exact: true })).toHaveValue('Lemon zest')
+    await expect(page.getByLabel('Amount', { exact: true }).nth(1)).toHaveValue('4')
+    expect((await app.db.query('select id from public.inventory_batches')).rows).toHaveLength(2)
   } finally { await app.db.close() }
 })
 

@@ -106,7 +106,7 @@ export function combinedQuantities(batches: Batch[]) {
   return [...totals].map(([unit, quantity]) => formatQuantity(quantity.toNumber(), unit)).concat(approximate).join(' + ') || 'Empty'
 }
 
-export interface Need { ingredient_id: string; quantity: number; unit: Unit; preparation_notes?: string }
+export interface Need { ingredient_id: string; quantity: number; unit: Unit; preparation_notes?: string; name?: string }
 export interface Allocation { batch: Batch; amount?: number; contentAmount?: number; contentUnit?: Unit }
 export interface Availability { need: Need; allocations: Allocation[]; missing: number; incompatible: boolean }
 

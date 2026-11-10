@@ -153,11 +153,15 @@ export function Cook() {
 }
 
 function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServings: number }) {
-  const { kitchen, inventory, save, busy } = useKitchen()
+  const { kitchen, inventory, manage, save, busy } = useKitchen()
   const navigate = useNavigate()
+  const listId = useId()
   const [servings, setServings] = useState(initialServings)
   const original = recipe ? kitchen.recipe_ingredients.filter((line) => line.recipe_id === recipe.id).sort((a, b) => a.position - b.position) : []
-  const [needs, setNeeds] = useState<Need[]>(() => scaleNeeds(original, recipe?.servings ?? 1, initialServings))
+  const ingredientName = (id: string) => kitchen.ingredients.find((ingredient) => ingredient.id === id)?.name ?? ''
+  const recipeNeeds = (count: number) => scaleNeeds(original, recipe?.servings ?? 1, count)
+    .map((need) => ({ ...need, name: ingredientName(need.ingredient_id) }))
+  const [needs, setNeeds] = useState<Need[]>(() => recipeNeeds(initialServings))
   const [preferred, setPreferred] = useState<Record<number, string>>({})
   const [remaining, setRemaining] = useState<Record<string, string>>({})
   const [partialReview, setPartialReview] = useState('')
@@ -174,23 +178,46 @@ function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServing
   const [plannedFor, setPlannedFor] = useState(localDate())
   const [error, setError] = useState('')
   const batches = activeBatches(kitchen).filter((batch) => batch.quantity > 0)
-  const plan = getRecipeAvailability(needs, batches, preferred, kitchen.ingredients)
+  const reviewedNeeds = needs.map((need) => ({
+    ...need, ingredient_id: findIngredient(kitchen.ingredients, need.name ?? '')?.id ?? '',
+  }))
+  const plan = getRecipeAvailability(reviewedNeeds, batches, preferred, kitchen.ingredients)
   const missing = plan.filter((row) => row.missing > 0)
   const shortageKey = missing.length ? JSON.stringify(plan.map(({ need, missing, allocations }) =>
     [need, missing, allocations.map(({ batch, amount, contentUnit }) => [batch.id, batch.revision, amount, contentUnit])])) : ''
   const allowPartial = !!shortageKey && partialReview === shortageKey
-  const selectedIngredients = kitchen.ingredients.filter((item) => needs.some((need) => need.ingredient_id === item.id))
+  const selectedIngredients = kitchen.ingredients.filter((item) => reviewedNeeds.some((need) => need.ingredient_id === item.id))
   const productNames = new Map(kitchen.products.map((product) => [product.id, product.name]))
   const locationName = (id: string) => kitchen.locations.find((location) => location.id === id)?.name ?? 'Unknown'
-  const ingredientName = (id: string) => kitchen.ingredients.find((ingredient) => ingredient.id === id)?.name ?? 'Select ingredient'
+  const names = [...new Set(kitchen.ingredients.flatMap((item) => [item.name, ...(item.aliases ?? [])]))]
+  const validServings = Number.isInteger(servings) && servings >= 1 && servings <= 1000
+  const validIngredients = needs.length > 0 && needs.every((need) => need.name?.trim() && need.quantity > 0 && need.quantity <= 1_000_000)
+  const recipeIngredients = (lines: Need[]) => lines.map((need) => ({
+    ingredient_id: need.ingredient_id || undefined, name: need.name?.trim(),
+    quantity: need.quantity, unit: need.unit, preparation_notes: need.preparation_notes ?? '',
+  }))
+  const scaledRecipe = recipeNeeds(servings)
+  const hasIngredientChanges = JSON.stringify(recipeIngredients(reviewedNeeds)) !== JSON.stringify(recipeIngredients(scaledRecipe))
 
   function changeNeed(index: number, update: Partial<Need>) {
     setNeeds((previous) => previous.map((row, i) => i === index ? { ...row, ...update } : row))
-    if (update.ingredient_id !== undefined || update.unit !== undefined) setPreferred((previous) => ({ ...previous, [index]: '' }))
+    if (update.name !== undefined || update.unit !== undefined) setPreferred((previous) => ({ ...previous, [index]: '' }))
   }
-  function chooseIngredient(index: number, id: string) {
-    const batch = sortBatches(batches.filter((row) => row.ingredient_id === id))[0]
-    changeNeed(index, { ingredient_id: id, preparation_notes: undefined, ...(batch ? { unit: batch.unit, quantity: 1 } : {}) })
+  function resolveIngredient(index: number) {
+    const known = findIngredient(kitchen.ingredients, needs[index].name ?? '')
+    if (!known || known.id === needs[index].ingredient_id) return
+    const batch = sortBatches(batches.filter((row) => row.ingredient_id === known.id))[0]
+    changeNeed(index, { name: known.name, ingredient_id: known.id, preparation_notes: undefined,
+      ...(batch ? { unit: batch.unit, quantity: 1 } : {}) })
+  }
+  async function saveIngredients() {
+    if (!recipe || !validIngredients || !validServings) return
+    setError('')
+    try {
+      // The review may use a different serving count than the saved recipe.
+      const ingredients = recipeIngredients(scaleNeeds(reviewedNeeds, servings, recipe.servings))
+      await manage('recipe_save', { ...recipe, ingredients })
+    } catch (error) { setError(errorMessage(error)) }
   }
   async function submit(event: FormEvent) {
     event.preventDefault()
@@ -198,13 +225,13 @@ function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServing
     submitted.current = true
     setError('')
     try {
-      if (!name.trim() || !Number.isInteger(servings) || servings < 1 || servings > 1000) throw new Error('Enter a meal name and a valid number of servings.')
-      if (!needs.length || needs.some((need) => !need.ingredient_id || !(need.quantity > 0))) throw new Error('Choose and quantify each ingredient.')
+      if (!name.trim() || !validServings) throw new Error('Enter a meal name and a valid number of servings.')
+      if (!validIngredients) throw new Error('Name and quantify each ingredient.')
       const deductions = deductionsFor(plan, remaining, allowPartial)
       const result = await inventory('cook', {
         name, notes, servings, recipe_id: recipe?.id,
         deductions, ...(allowPartial ? { allow_partial: true } : {}),
-        save_recipe: !recipe && saveRecipe ? { name, servings, notes, ingredients: needs } : null,
+        save_recipe: !recipe && saveRecipe ? { name, servings, notes, ingredients: recipeIngredients(reviewedNeeds) } : null,
         leftovers: storeLeftovers ? { prepared, eaten, location_id: storage, stored_on: storedOn, use_by: useBy || null } : null,
       })
       navigate(`/meals/history/${result.event_id}`)
@@ -242,22 +269,22 @@ function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServing
             setServings(value)
             if (Number.isInteger(value) && value > 0) setPrepared(value)
             if (recipe && value > 0 && value <= 1000 && Number.isInteger(value)) {
-              setNeeds(scaleNeeds(original, recipe.servings, value))
+              setNeeds(recipeNeeds(value))
               setPreferred({})
             }
           }} />
         </Field>
       </div>
       <fieldset className="stack"><legend>Ingredients and deductions</legend>
-        {!needs.length && <p className="muted">Choose ingredients from your inventory to begin.</p>}
+        <p className="muted">Choose a saved ingredient or type a new one.</p>
+        <datalist id={listId}>{names.map((ingredient) => <option key={ingredient} value={ingredient} />)}</datalist>
         {plan.map(({ need, allocations, missing, incompatible }, index) => {
           const matches = sortBatches(batches.filter((batch) => batch.ingredient_id === need.ingredient_id))
-          const selectable = kitchen.ingredients.filter((item) => recipe || batches.some((batch) => batch.ingredient_id === item.id))
           return <div className="batch stack" key={index}>
             <div className="line-grid">
-              <Field label={`Ingredient ${index + 1}`}><select value={need.ingredient_id} required onChange={(event) => chooseIngredient(index, event.target.value)}>
-                <option value="">Choose ingredient</option>{selectable.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </select></Field>
+              <Field label={`Ingredient ${index + 1}`}><input list={listId} value={need.name ?? ''} maxLength={120} required
+                onChange={(event) => changeNeed(index, { name: event.target.value, preparation_notes: undefined })}
+                onBlur={() => resolveIngredient(index)} /></Field>
               {need.unit === 'level' ? <span className="muted">Approximate</span> : <Field label="Amount"><input type="number" inputMode="decimal" min=".00000001" max="1000000" step=".00000001" value={need.quantity || ''} required onChange={(event) => changeNeed(index, { quantity: Number(event.target.value) })} /></Field>}
               <Field label="Unit"><select value={need.unit} onChange={(event) => changeNeed(index, { unit: event.target.value as Unit, ...(event.target.value === 'level' ? { quantity: 1 } : {}) })}><UnitOptions options={units} /></select></Field>
               <Button variant="quiet" aria-label={`Remove meal ingredient ${index + 1}`} onClick={() => {
@@ -272,7 +299,7 @@ function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServing
               </option>)}
             </select></Field>}
             {need.preparation_notes && <p className="muted">{need.preparation_notes}</p>}
-            {need.ingredient_id && missing > 0 && <Alert kind="info">{need.unit === 'level'
+            {need.name?.trim() && missing > 0 && <Alert kind="info">{need.unit === 'level'
               ? 'No approximate batch available.' : `Short by ${formatQuantity(missing, need.unit)}. ${incompatible
                 ? 'Some stock uses incompatible units. Measure it in a compatible unit, choose a substitute, or set a known grams-per-cup conversion in Settings.'
                 : 'Choose a substitute, change the amount, or confirm a partial deduction.'}`}</Alert>}
@@ -287,10 +314,13 @@ function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServing
             </div>)}
           </div>
         })}
-        <div><Button variant="secondary" disabled={needs.length >= 100} onClick={() => setNeeds((previous) => [...previous, { ingredient_id: '', quantity: 1, unit: 'count' }])}><Plus size={18} />Add meal ingredient</Button></div>
+        <div className="row">
+          <Button variant="secondary" disabled={needs.length >= 100} onClick={() => setNeeds((previous) => [...previous, { ingredient_id: '', name: '', quantity: 1, unit: 'count' }])}><Plus size={18} />Add meal ingredient</Button>
+          {recipe && hasIngredientChanges && <Button variant="secondary" disabled={busy || !validIngredients || !validServings} onClick={() => void saveIngredients()}>Save ingredients to recipe</Button>}
+        </div>
       </fieldset>
-      {missing.some(({ need }) => need.ingredient_id) && <MissingShopping rows={missing} />}
-      {!!missing.length && <label className="check"><input type="checkbox" checked={allowPartial} onChange={(event) => setPartialReview(event.target.checked ? shortageKey : '')} />
+      {missing.some(({ need }) => need.name?.trim()) && <MissingShopping rows={missing} />}
+      {validIngredients && !!missing.length && <label className="check"><input type="checkbox" checked={allowPartial} onChange={(event) => setPartialReview(event.target.checked ? shortageKey : '')} />
         {plan.some((row) => row.allocations.length) ? 'Record this meal and deduct only the available amounts' : 'Record this meal without deducting inventory'}
       </label>}
       <label className="check"><input type="checkbox" checked={storeLeftovers} onChange={(event) => setStoreLeftovers(event.target.checked)} />Record portions and leftovers</label>
@@ -307,7 +337,7 @@ function CookForm({ recipe, initialServings }: { recipe?: Recipe; initialServing
       {!recipe && <label className="check"><input type="checkbox" checked={saveRecipe} onChange={(event) => setSaveRecipe(event.target.checked)} />Save this meal as a reusable recipe</label>}
       <Field label="Cooking notes"><textarea value={notes} maxLength={2000} onChange={(event) => setNotes(event.target.value)} /></Field>
       {error && <Alert>{error}</Alert>}
-      <div className="row"><Button type="submit" disabled={busy || !needs.length || (!!missing.length && !allowPartial)}><ChefHat size={18} />Confirm cooking</Button><span className="muted">Confirmation applies all reviewed deductions together.</span></div>
+      <div className="row"><Button type="submit" disabled={busy || !validIngredients || (!!missing.length && !allowPartial)}><ChefHat size={18} />Confirm cooking</Button><span className="muted">Confirmation applies all reviewed deductions together.</span></div>
     </form>
   </>
 }
@@ -317,7 +347,8 @@ function MissingShopping({ rows }: { rows: Availability[] }) {
   const [list, setList] = useState(kitchen.shopping_lists[0]?.id ?? '')
   const items = rows.flatMap(({ need, missing }) => {
     const ingredient = kitchen.ingredients.find((row) => row.id === need.ingredient_id)
-    return !ingredient ? [] : [{ ingredient_id: ingredient.id, name: ingredient.name, category: ingredient.category,
+    const name = ingredient?.name ?? need.name?.trim()
+    return !name ? [] : [{ ingredient_id: ingredient?.id, name, category: ingredient?.category ?? 'Other',
       quantity: need.unit === 'level' ? 1 : missing, unit: need.unit === 'level' ? 'package' : need.unit }]
   })
   const selected = kitchen.shopping_lists.some((row) => row.id === list) ? list : kitchen.shopping_lists[0]?.id
